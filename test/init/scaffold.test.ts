@@ -7,9 +7,7 @@ import { INIT_FILE, scaffold, TOKENS_FILE } from '../../src/init/ScaffoldCommand
 import type { SyncConfig } from '../../src/init/types.js';
 
 const config: SyncConfig = {
-  routes: { browser: ['src/lib/api'], server: [] },
-  httpWrapper: { jsDocTag: '@offlineSyncCall' },
-  scope: { pathPrefixes: [], onlineOnlyPathPrefixes: [] },
+  routes: { browser: ['src/lib/api'] },
   powersync: {
     adminUrl: 'http://engine.test',
     buckets: [],
@@ -96,22 +94,23 @@ describe('the token provider', () => {
 });
 
 describe('the wiring', () => {
-  it('correctly resolves back to the files generated at the root', () => {
+  it('imports entites and the schema as same-directory siblings', () => {
     const cwd = project();
     run(cwd);
     const text = read(cwd, INIT_FILE);
-    expect(text).toContain("from '../../../offline-map.stub'");
-    expect(text).toContain("from '../../../offline-handlers.stub'");
+    expect(text).toContain("from './entites'");
+    expect(text).toContain("from './schema'");
+    expect(text).toContain('tableColumnsFromSchema(AppSchema)');
   });
 
-  it('recomputes that path when the folder depth changes', () => {
+  it('keeps importing them as siblings regardless of the schema folder depth', () => {
     const cwd = project();
     run(cwd, {
       ...config,
       powersync: { ...config.powersync!, schemaFile: 'app/offline/schema.ts' },
     });
     const text = readFileSync(join(cwd, 'app/offline', INIT_FILE), 'utf8');
-    expect(text).toContain("from '../../offline-map.stub'");
+    expect(text).toContain("from './entites'");
   });
 
   it('opens the channel LAST', () => {

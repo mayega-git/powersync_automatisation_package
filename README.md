@@ -22,7 +22,21 @@ Avec **npm 10 ou plus récent**, le drapeau n'est plus nécessaire :
 npm install https://github.com/mayega-git/powersync_automatisation_package
 ```
 
-Vérifier sa version : `npm --version`. Mettre à jour : `npm install -g npm@latest`.
+Vérifier sa version : `npm --version`. Mettre à jour (sans exiger une version
+plus récente de Node) : `npm install -g npm@10`.
+
+## Première étape
+
+Une fois installé, dans le projet front-end :
+
+```bash
+npx offline-sync setup
+```
+
+Elle enchaîne l'installation du moteur, la configuration, la génération du
+schéma et le branchement du module — en s'arrêtant, si besoin, pour dire
+précisément quoi remplir. Relancer la même commande reprend où elle s'était
+arrêtée. Détail complet dans [`INSTALLATION-CLIENT.md`](INSTALLATION-CLIENT.md).
 
 ## Documentation
 

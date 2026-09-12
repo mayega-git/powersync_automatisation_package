@@ -1,14 +1,6 @@
 import { dirname, isAbsolute, join } from 'node:path';
 
 import { CONFIG_FILE_NAME, writeConfigTemplate } from './ConfigLoader.js';
-import { check, type CheckOptions, type CheckResult, REVIEW_THRESHOLD } from './Checker.js';
-import {
-  generate,
-  HANDLERS_FILE,
-  STUB_FILE,
-  type GenerateOptions,
-  type GenerateResult,
-} from './MappingGenerator.js';
 import { checkEntities, type EntitiesCheckResult } from './EntitiesChecker.js';
 import {
   ENTITIES_FILE,
@@ -16,11 +8,6 @@ import {
   writeEntitiesModule,
   writeEntitiesTemplate,
 } from './EntitiesFile.js';
-import { OPERATIONS_FILE_NAME } from './OperationsDocument.js';
-import {
-  writeOperationsDraft,
-  type DraftWriteResult,
-} from './OperationsDraft.js';
 import { readSchemaFile, SCHEMA_FILE } from './ReplicatedSchema.js';
 import { generateSchema, type SchemaOptions, type SchemaResult } from './SchemaCommand.js';
 import {
@@ -174,14 +161,11 @@ export class ExecuteCliCommand {
     this.out.log('');
     this.out.log('To fill in before continuing:');
     this.out.log('  routes.browser -- where browser calls live');
-    this.out.log('  routes.server  -- where BFF-to-server calls live');
-    this.out.log('  docSource      -- where to find the server documentation (optional)');
     this.out.log('  powersync      -- where to reach the sync engine (optional)');
     this.out.log('');
     this.out.log(
-      `${OPERATIONS_FILE_NAME}, the operations table, will be written by ` +
-        '"offline-sync build" by following the code. It still needs review: see ' +
-        'offline-sync/docs/format-document-operations.md.',
+      'Next: "offline-sync schema", then "offline-sync entites" to declare ' +
+        'which table answers which requests.',
     );
   }
 
@@ -234,25 +218,6 @@ export class ExecuteCliCommand {
     this.out.log(`Schema written: ${r.schemaFile}`);
     this.out.log('This file is generated: do not edit it, regenerate it.');
 
-    if (r.operations > 0) {
-      this.out.log('');
-      this.out.log(
-        `${r.operations} operation(s) compared: ${r.resolved} now carry a table ` +
-          'name read from the schema.',
-      );
-      if (r.unresolved.length > 0) {
-        this.out.log('');
-        this.out.log(
-          `${r.unresolved.length} guessed name(s) with no matching replicated ` +
-            "table. This isn't a fault in the table: it's what the sync rules " +
-            'are missing, or a name the HTTP path fails to suggest.',
-        );
-        for (const u of r.unresolved) {
-          this.out.log(`  ${u.table}  (${u.operations} operation(s))`);
-        }
-      }
-    }
-
     return r;
   }
 
@@ -275,105 +240,6 @@ export class ExecuteCliCommand {
         'regenerates without ever touching tokens.ts.',
     );
     return r;
-  }
-
-  operations(options: DraftOptions): DraftWriteResult {
-    const config = (options.loadConfigFn ?? loadConfig)(options.cwd);
-    const r = writeOperationsDraft(
-      options.cwd,
-      config,
-      options.force !== undefined ? { force: options.force } : {},
-    );
-
-    this.out.log(`${r.rows.length} operation(s) drawn from the code.`);
-    this.out.log(
-      `  ${r.matched} with a server endpoint, established by following the route file.`,
-    );
-    this.out.log(`  ${r.bffFunctions} BFF function(s) carry a marked path.`);
-
-    const withoutServer = r.rows.filter((l: any) => l.serverPath === undefined);
-    if (withoutServer.length > 0) {
-      this.out.log('');
-      this.out.log(`${withoutServer.length} without a single server endpoint, and why:`);
-      for (const l of withoutServer.slice(0, 20)) {
-        this.out.log(`  ${l.method} ${l.path}`);
-        this.out.log(`      ${l.serverReason ?? 'unknown reason'}`);
-      }
-      if (withoutServer.length > 20) this.out.log(`  ... and ${withoutServer.length - 20} more.`);
-    }
-
-    if (r.duplicateShapes.length > 0) {
-      this.out.log('');
-      this.out.log(
-        `${r.duplicateShapes.length} route(s) described twice, differing only in ` +
-          "a hole's name. At runtime only one shape exists: one of the two will " +
-          'never be reached.',
-      );
-      for (const keys of r.duplicateShapes) this.out.log(`  ${keys.join('  /  ')}`);
-    }
-
-    if (r.unreadable.length > 0) {
-      this.out.log('');
-      this.out.log(
-        `${r.unreadable.length} marked call(s) whose path couldn't be read:`,
-      );
-      for (const c of r.unreadable.slice(0, 10)) {
-        this.out.log(`  ${c.file}:${c.line}  ${c.unresolvedReason ?? ''}`);
-      }
-    }
-
-    this.out.log('');
-    this.out.log(
-      r.written
-        ? `${r.path} written. TO REVIEW: the Server column and connectivity.`
-        : (r.reason ?? `${r.path} unchanged.`),
-    );
-    return r;
-  }
-
-  async discover(options: GenerateOptions): Promise<GenerateResult> {
-    const result = await generate(options);
-
-    this.out.log(`${result.operations.length} operation(s) read from ${OPERATIONS_FILE_NAME}.`);
-    this.out.log(`  ${result.withServerPath} with a declared server endpoint.`);
-    this.out.log(
-      `  ${result.withResponseShape} with their response shape, taken from the documentation.`,
-    );
-    this.out.log(
-      `  ${result.withResolvedTable} with a table name read from the engine's schema.`,
-    );
-    if (result.schema === undefined) {
-      this.out.log('');
-      this.out.log(
-        'No schema file: table names are GUESSED from the paths. Run ' +
-          '"offline-sync schema" once, with the engine running, to replace them ' +
-          'with the real ones.',
-      );
-    }
-
-    const withoutServer = result.operations.length - result.withServerPath;
-    if (withoutServer > 0) {
-      this.out.log('');
-      this.out.log(
-        `${withoutServer} operation(s) without a server endpoint: normal for a ` +
-          'route that aggregates several calls. They are intercepted and ' +
-          'replayed like the others, only their response shape is missing.',
-      );
-    }
-
-    this.out.log('');
-    this.out.log(`Operations map  : ${STUB_FILE}`);
-    this.out.log(`Handler templates : ${HANDLERS_FILE}`);
-    this.out.log('');
-    this.out.log(
-      'These two files are generated: do not edit them. Everything is fixed ' +
-        `in ${OPERATIONS_FILE_NAME}.`,
-    );
-    this.out.log(
-      'Still to fill in the templates: columns and WHERE clauses, marked ' +
-        '"TO CHECK".',
-    );
-    return result;
   }
 
   async setup(options: ChainOptions): Promise<ChainResult> {
@@ -430,9 +296,6 @@ export class ExecuteCliCommand {
       cwd,
       ...(options.loadConfigFn !== undefined ? { loadConfigFn: options.loadConfigFn } : {}),
       ...(options.fetchSchemaFn !== undefined ? { fetchSchemaFn: options.fetchSchemaFn } : {}),
-      ...(options.loadOperationsFn !== undefined
-        ? { loadOperationsFn: options.loadOperationsFn }
-        : {}),
       token,
     });
     steps.push({ name: 'schema', state: 'done' });
@@ -447,72 +310,9 @@ export class ExecuteCliCommand {
 
     this.out.log('');
     this.out.log(
-      `Next: "offline-sync build". It writes ${OPERATIONS_FILE_NAME} by ` +
-        'following the code, checks it against that code, then generates the ' +
-        'map and handler templates.',
+      'Next: "offline-sync entites" to declare which table answers which ' +
+        'requests, then "offline-sync check-entites" to verify the declaration.',
     );
-    return { steps, complete: true };
-  }
-
-  async build(options: ChainOptions): Promise<ChainResult> {
-    const cwd = options.cwd;
-    const steps: ChainStep[] = [];
-
-    const buffer: string[] = [];
-    const deferred = new ExecuteCliCommand({
-      log: (m) => buffer.push(m),
-      error: (m) => buffer.push(m),
-    });
-
-    deferred.out.log('== operations: the table, drawn from the code ==');
-    try {
-      deferred.operations({
-        cwd,
-        ...(options.loadConfigFn !== undefined ? { loadConfigFn: options.loadConfigFn } : {}),
-      });
-      steps.push({ name: 'operations', state: 'done' });
-    } catch (err) {
-      return this.stop(
-        steps,
-        'operations',
-        err instanceof Error ? err.message : String(err),
-        buffer,
-      );
-    }
-
-    deferred.out.log('');
-    deferred.out.log('== check: the table against the code ==');
-    const verdict = await deferred.check({
-      cwd,
-      ...(options.loadConfigFn !== undefined ? { loadConfigFn: options.loadConfigFn } : {}),
-      ...(options.loadOperationsFn !== undefined
-        ? { loadOperationsFn: options.loadOperationsFn }
-        : {}),
-    });
-
-    if (!verdict.ok) {
-      return this.stop(
-        steps,
-        'discover',
-        'the table says something the code denies. Nothing is generated: a ' +
-          "template drawn from a path that doesn't exist compiles, registers, " +
-          'and never answers.',
-        buffer,
-      );
-    }
-    steps.push({ name: 'check', state: 'done' });
-    for (const line of buffer) this.out.log(line);
-
-    this.out.log('');
-    this.out.log('== discover: the map and the templates ==');
-    await this.discover({
-      cwd,
-      ...(options.loadConfigFn !== undefined ? { loadConfigFn: options.loadConfigFn } : {}),
-      ...(options.loadOperationsFn !== undefined
-        ? { loadOperationsFn: options.loadOperationsFn }
-        : {}),
-    });
-    steps.push({ name: 'discover', state: 'done' });
     return { steps, complete: true };
   }
 
@@ -537,55 +337,6 @@ export class ExecuteCliCommand {
     }
     return { steps, complete: false };
   }
-
-  /** Returns `true` when nothing blocks. The caller turns it into the exit code. */
-  async check(options: CheckOptions): Promise<CheckResult> {
-    const r = await check(options);
-
-    this.out.log(
-      `${r.operations} operation(s) declared, ${r.withServerPath} with a server endpoint.`,
-    );
-
-    if (r.errors.length > 0) {
-      this.out.log('');
-      this.out.log(`${r.errors.length} problem(s) -- the table says something the code denies:`);
-      for (const e of r.errors) {
-        this.out.log(`  ${OPERATIONS_FILE_NAME}:${e.line}  ${e.key}`);
-        this.out.log(`      ${e.message}`);
-      }
-    }
-
-    if (r.undeclaredCalls.length > 0) {
-      this.out.log('');
-      this.out.log(
-        `${r.undeclaredCalls.length} call(s) in the code absent from the table -- ` +
-          "for information: not every operation is meant to work offline.",
-      );
-      for (const c of r.undeclaredCalls.slice(0, 20)) {
-        this.out.log(`  ${c.file}:${c.line}  ${c.path}`);
-      }
-      if (r.undeclaredCalls.length > 20) {
-        this.out.log(`  ... and ${r.undeclaredCalls.length - 20} more.`);
-      }
-    }
-
-    const toReview = r.reviewOrder.filter((x) => x.score < REVIEW_THRESHOLD);
-    if (toReview.length > 0) {
-      this.out.log('');
-      this.out.log(
-        `${toReview.length} weakly similar match(es) -- review these first. Not ` +
-          "an error: a correct match can share no word at all.",
-      );
-      for (const x of toReview) {
-        this.out.log(`  ${x.score.toFixed(2)}  ${x.key}`);
-        this.out.log(`        ${x.path}  ->  ${x.serverPath}`);
-      }
-    }
-
-    this.out.log('');
-    this.out.log(r.ok ? 'Nothing blocking to report.' : 'Some problems remain to fix.');
-    return r;
-  }
 }
 
 /** `stopped` is not a failure: it's the normal case on a first run, when only the developer can continue. */
@@ -601,19 +352,11 @@ export interface ChainResult {
   complete: boolean;
 }
 
-export interface DraftOptions {
-  cwd: string;
-  loadConfigFn?: (cwd: string) => SyncConfig;
-  /** Overwrite an existing table. Default false: it carries a review. */
-  force?: boolean;
-}
-
 export interface ChainOptions {
   cwd: string;
   loadConfigFn?: (cwd: string) => SyncConfig;
   run?: (command: string, cwd: string) => void;
   fetchSchemaFn?: SchemaOptions['fetchSchemaFn'];
-  loadOperationsFn?: SchemaOptions['loadOperationsFn'];
   token?: string;
 }
 
@@ -641,10 +384,6 @@ export class Cli {
           const r = await this.commands.setup({ cwd });
           return r.complete ? 0 : 1;
         }
-        case 'build': {
-          const r = await this.commands.build({ cwd });
-          return r.complete ? 0 : 1;
-        }
         case 'powersync':
           this.commands.powersync({ cwd });
           return 0;
@@ -654,16 +393,6 @@ export class Cli {
         case 'scaffold':
           this.commands.scaffold({ cwd });
           return 0;
-        case 'operations':
-          this.commands.operations({ cwd, force: argv.includes('--force') });
-          return 0;
-        case 'discover':
-          await this.commands.discover({ cwd });
-          return 0;
-        case 'check': {
-          const r = await this.commands.check({ cwd });
-          return r.ok ? 0 : 1;
-        }
         case 'entites':
           this.commands.entites({ cwd });
           return 0;
@@ -674,12 +403,10 @@ export class Cli {
         default:
           this.out.error(
             command === undefined
-              ? 'No command. Expected: setup, build -- or, one at a time: ' +
-                'powersync, init, schema, scaffold, entites, check-entites, ' +
-                'operations, check, discover.'
-              : `Unknown command: "${command}". Expected: setup, build -- or, ` +
-                'one at a time: powersync, init, schema, scaffold, entites, ' +
-                'check-entites, operations, check, discover.',
+              ? 'No command. Expected: setup -- or, one at a time: powersync, ' +
+                'init, schema, scaffold, entites, check-entites.'
+              : `Unknown command: "${command}". Expected: setup -- or, one at ` +
+                'a time: powersync, init, schema, scaffold, entites, check-entites.',
           );
           return 1;
       }
