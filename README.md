@@ -1,5 +1,2 @@
 # powersync_automatisation_package
-# powersync_automatisation_package
-# powersync_automatisation_package
-# powersync_automatisation_package
-# powersync_automatisation_package
+
