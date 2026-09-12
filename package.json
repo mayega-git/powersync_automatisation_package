@@ -1,0 +1,69 @@
+{
+  "name": "@ksm/offline-sync",
+  "version": "0.1.0",
+  "description": "Adaptateur offline-first HTTP <-> SQL local (PowerSync) pour les clients KSM.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./powersync": {
+      "types": "./dist/powersync/index.d.ts",
+      "default": "./dist/powersync/index.js"
+    },
+    "./pwa": {
+      "types": "./dist/pwa/index.d.ts",
+      "default": "./dist/pwa/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "prepare": "tsc -p tsconfig.build.json",
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "example": "tsx example/main.ts",
+    "cli": "tsx src/init/bin.ts"
+  },
+  "keywords": [
+    "offline-first",
+    "sync",
+    "powersync",
+    "openapi",
+    "rebase"
+  ],
+  "author": "KSM",
+  "license": "UNLICENSED",
+  "dependencies": {
+    "js-yaml": "^4.1.0"
+  },
+  "peerDependencies": {
+    "@powersync/common": "^2.1.0",
+    "@powersync/service-sync-rules": "^0.41.0"
+  },
+  "devDependencies": {
+    "@powersync/common": "^2.1.0",
+    "@powersync/node": "^0.21.0",
+    "@types/js-yaml": "^4.0.9",
+    "@types/node": "^20.11.0",
+    "better-sqlite3": "^11.0.0",
+    "tsx": "^4.7.0",
+    "typescript": "^5.4.0",
+    "vitest": "^4.1.10"
+  },
+  "bin": {
+    "offline-sync": "./dist/init/bin.js"
+  },
+  "peerDependenciesMeta": {
+    "@powersync/service-sync-rules": {
+      "optional": true
+    }
+  }
+}

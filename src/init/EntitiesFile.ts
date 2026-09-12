@@ -1,0 +1,178 @@
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname, isAbsolute, join } from 'node:path';
+import { load as parseYaml } from 'js-yaml';
+
+import type { EntitiesDeclaration, EntityRule } from '../core/EntityRoutes.js';
+import type { ReplicatedSchema } from './ReplicatedSchema.js';
+
+export const ENTITIES_FILE = 'offline-sync.entites.yaml';
+
+export class EntitiesError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'EntitiesError';
+  }
+}
+
+const HEADER = `# Which table for which requests. WRITTEN BY HAND, versioned.
+#
+# The module guesses nothing: it applies two search rules against this file,
+# and anything not in it goes to the network as before.
+#
+#   RULE 1, by prefix -- one line covers a whole table:
+#       tag_entity: /api/education/tags
+#     covers listing, creating, reading one row, updating and deleting it.
+#     The longest prefix wins.
+#
+#   RULE 2, by placement -- when a path is out of step, write requests one by
+#     one under the table:
+#       category_entity:
+#         - GET    /api/education/categories
+#         - POST   /api/education/categories
+#         - PUT    /api/education/categories/{id}
+#         - DELETE /api/education/categories/{id}
+#
+# WATCH OUT FOR A PREFIX TOO WIDE. "/api/education" would also take courses,
+# blogs and podcasts. The module refuses to start when a prefix covers
+# another table's path, but it can't do anything about a prefix that covers
+# a route nobody declared.
+
+entites:
+`;
+
+/** Never replaces an existing file: it holds work done by hand. */
+export function writeEntitiesTemplate(
+  cwd: string,
+  schema: ReplicatedSchema,
+  path: string = ENTITIES_FILE,
+): { path: string; written: boolean; missing: string[] } {
+  const fullPath = isAbsolute(path) ? path : join(cwd, path);
+
+  if (existsSync(fullPath)) {
+    const existing = new Set(Object.keys(loadEntitiesFrom(fullPath)));
+    const missing = schema.tables
+      .map((t) => t.name)
+      .filter((name) => !existing.has(name));
+    return { path: fullPath, written: false, missing };
+  }
+
+  const lines = schema.tables.map(
+    (t) => `  ${t.name}:  # to fill in: "/api/..." or a list of requests`,
+  );
+  mkdirSync(dirname(fullPath), { recursive: true });
+  writeFileSync(fullPath, HEADER + lines.join('\n') + '\n', 'utf8');
+  return { path: fullPath, written: true, missing: [] };
+}
+
+export function loadEntities(
+  cwd: string,
+  path: string = ENTITIES_FILE,
+): EntitiesDeclaration {
+  const fullPath = isAbsolute(path) ? path : join(cwd, path);
+  if (!existsSync(fullPath)) {
+    throw new EntitiesError(
+      `${path} was not found. Run "offline-sync entites" to write a template ` +
+        'from the tables the engine replicates.',
+    );
+  }
+  return loadEntitiesFrom(fullPath);
+}
+
+function loadEntitiesFrom(path: string): EntitiesDeclaration {
+  const raw: unknown = parseYaml(readFileSync(path, 'utf8'));
+  if (typeof raw !== 'object' || raw === null) {
+    throw new EntitiesError(`${path} is empty or malformed.`);
+  }
+
+  const entities = (raw as Record<string, unknown>)['entites'];
+  if (entities === undefined || entities === null) {
+    throw new EntitiesError(
+      `${path} has no "entites:" block. It's the only key expected at the ` +
+        'root of the file.',
+    );
+  }
+  if (typeof entities !== 'object' || Array.isArray(entities)) {
+    throw new EntitiesError(
+      `The "entites:" block of ${path} isn't a list of tables. Expected ` +
+        'form: a table name, then a prefix or a list of requests.',
+    );
+  }
+
+  const out: Record<string, EntityRule> = {};
+  for (const [table, rule] of Object.entries(entities as Record<string, unknown>)) {
+    if (rule === null || rule === undefined) {
+      throw new EntitiesError(
+        `Table ${table} is declared in ${path} but with no path at all. Fill ` +
+          "in the line, or remove the table: a table with no path intercepts " +
+          "nothing, and nothing would say so at runtime.",
+      );
+    }
+    if (typeof rule === 'string') {
+      out[table] = rule;
+      continue;
+    }
+    if (Array.isArray(rule)) {
+      out[table] = rule.map((l) => String(l));
+      continue;
+    }
+    throw new EntitiesError(
+      `Table ${table} declares something other than a prefix or a list of ` +
+        `requests in ${path}.`,
+    );
+  }
+
+  return out;
+}
+
+/**
+ * The TypeScript transcription the application imports, since the browser
+ * doesn't read a file off disk -- only what the bundler put in the package.
+ * Rewritten by "entites" and by "check-entites", so the two files can't diverge.
+ */
+export function writeEntitiesModule(
+  declaration: EntitiesDeclaration,
+  path: string,
+  generatedAt: string,
+): void {
+  const lines = Object.entries(declaration).map(([table, rule]) =>
+    typeof rule === 'string'
+      ? `  ${table}: ${JSON.stringify(rule)},`
+      : `  ${table}: [\n${rule
+          .map((l) => `    ${JSON.stringify(l)},`)
+          .join('\n')}\n  ],`,
+  );
+
+  const content = `/* eslint-disable */
+/**
+ * GENERATED from ${ENTITIES_FILE} on ${generatedAt}.
+ *
+ * DO NOT EDIT: this file is the transcription of the YAML, rewritten on
+ * every "offline-sync entites" and "offline-sync check-entites". The YAML is
+ * the only thing written by hand.
+ */
+import type { EntitiesDeclaration } from '@ksm/offline-sync';
+
+export const entites: EntitiesDeclaration = {
+${lines.join('\n')}
+};
+`;
+
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, content, 'utf8');
+}
+
+/** Declared paths, flattened: what `check` looks for in the code. */
+export function declaredPaths(declaration: EntitiesDeclaration): string[] {
+  const paths: string[] = [];
+  for (const rule of Object.values(declaration)) {
+    if (typeof rule === 'string') {
+      paths.push(rule);
+      continue;
+    }
+    for (const line of rule) {
+      const parts = line.trim().split(/\s+/);
+      if (parts.length === 2) paths.push(parts[1]!);
+    }
+  }
+  return paths;
+}
