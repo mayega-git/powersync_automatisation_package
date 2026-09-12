@@ -50,7 +50,6 @@
   },
   "devDependencies": {
     "@powersync/common": "^2.1.0",
-    "@powersync/node": "^0.21.0",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^20.11.0",
     "better-sqlite3": "^11.0.0",
