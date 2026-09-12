@@ -2,11 +2,6 @@ dist
 node_modules
 *.tsbuildinfo
 docs/*
-INSTALLATION-BACKEND.md 
-INSTALLATION-CLIENT.md 
-package.json
-README.md 
-tsconfig.build.json 
-tsconfig.json 
-vitest.config.ts 
+INSTALLATION-BACKEND.md
+INSTALLATION-CLIENT.md
 EXEMPLE-INSTALLATION-BACKEND.md
