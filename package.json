@@ -42,7 +42,7 @@
   "author": "KSM",
   "license": "UNLICENSED",
   "dependencies": {
-    "js-yaml": "^4.1.0"
+    "js-yaml": "^4.3.2"
   },
   "peerDependencies": {
     "@powersync/common": "^2.1.0",
