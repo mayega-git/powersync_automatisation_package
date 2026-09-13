@@ -38,6 +38,7 @@ export class ExecuteCliCommand {
   powersync(options: SetupOptions): SetupResult {
     const r = setupPowerSync(options);
 
+    this.out.log('Legend: + done   = already set up   ! needs you');
     for (const step of r.steps) {
       const mark =
         step.state === 'done' ? '+' : step.state === 'already-set' ? '=' : '!';
@@ -59,11 +60,14 @@ export class ExecuteCliCommand {
       this.out.log('');
     }
 
-    this.out.log(
-      remaining.length === 0
-        ? 'The application can run the engine. Next: "offline-sync init".'
-        : `${remaining.length} item(s) remain manual, listed above.`,
-    );
+    if (remaining.length === 0) {
+      this.out.log('The application can run the engine. Next: "offline-sync init".');
+    } else {
+      this.out.log('Still needs you:');
+      for (const step of remaining) {
+        this.out.log(`  - ${step.name}${step.detail !== undefined ? `: ${step.detail}` : ''}`);
+      }
+    }
     return r;
   }
 

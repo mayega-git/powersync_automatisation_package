@@ -172,19 +172,34 @@ describe('the bundler setting', () => {
 });
 
 describe('the engine address', () => {
-  it('declares it in the example, with no value', () => {
-    const { cwd, ran } = project();
-    writeFileSync(join(cwd, '.env.example'), 'ALREADY=1\n', 'utf8');
-    run(cwd, ran);
-    const written = readFileSync(join(cwd, '.env.example'), 'utf8');
-    expect(written).toContain(`${URL_VARIABLE}=`);
-    expect(written).toContain('ALREADY=1');
-  });
-
-  it('reports it when there is no example, rather than creating one', () => {
+  it('writes it to .env.sync, creating the file if needed', () => {
     const { cwd, ran } = project();
     const r = run(cwd, ran);
+
+    const written = readFileSync(join(cwd, '.env.sync'), 'utf8');
+    expect(written).toContain(`${URL_VARIABLE}=`);
     expect(step(r, URL_VARIABLE)?.state).toBe('manual');
+  });
+
+  it('says plainly that Next.js does not read .env.sync', () => {
+    // This is the whole point: .env.sync is written because it's the one
+    // file this module can address without guessing the host project's own
+    // env-file convention -- but it never reaches the browser on its own.
+    const { cwd, ran } = project();
+    run(cwd, ran);
+
+    const written = readFileSync(join(cwd, '.env.sync'), 'utf8');
+    expect(written).toMatch(/does NOT load this/);
+  });
+
+  it('does not duplicate the line on a second run', () => {
+    const { cwd, ran } = project();
+    run(cwd, ran);
+    const r = run(cwd, ran);
+
+    const written = readFileSync(join(cwd, '.env.sync'), 'utf8');
+    expect(written.split(URL_VARIABLE).length).toBe(2); // one declaration
+    expect(step(r, URL_VARIABLE)?.state).toBe('already-set');
   });
 });
 

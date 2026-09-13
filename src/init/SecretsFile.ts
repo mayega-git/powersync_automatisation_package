@@ -29,7 +29,8 @@ export function writeSecretsTemplate(cwd: string): SecretsWriteResult {
   return { path: SECRETS_FILE, written: true };
 }
 
-export function readAdminToken(cwd: string): string | undefined {
+/** Generic reader: `undefined` when the key is absent, or present but empty. */
+export function readEnvValue(cwd: string, key: string): string | undefined {
   const path = join(cwd, SECRETS_FILE);
   if (!existsSync(path)) return undefined;
 
@@ -39,12 +40,55 @@ export function readAdminToken(cwd: string): string | undefined {
 
     const separator = trimmed.indexOf('=');
     if (separator === -1) continue;
-    if (trimmed.slice(0, separator).trim() !== ADMIN_TOKEN_KEY) continue;
+    if (trimmed.slice(0, separator).trim() !== key) continue;
 
     const value = trimmed.slice(separator + 1).trim().replace(/^["']|["']$/g, '');
     return value.length > 0 ? value : undefined;
   }
   return undefined;
+}
+
+export function readAdminToken(cwd: string): string | undefined {
+  return readEnvValue(cwd, ADMIN_TOKEN_KEY);
+}
+
+/** True as soon as the key appears in the file, even with an empty value -- used for idempotence. */
+export function hasEnvKey(cwd: string, key: string): boolean {
+  const path = join(cwd, SECRETS_FILE);
+  if (!existsSync(path)) return false;
+
+  return readFileSync(path, 'utf8')
+    .split('\n')
+    .some((line) => {
+      const trimmed = line.trim();
+      if (trimmed.length === 0 || trimmed.startsWith('#')) return false;
+      const separator = trimmed.indexOf('=');
+      const name = separator === -1 ? trimmed : trimmed.slice(0, separator).trim();
+      return name === key;
+    });
+}
+
+/** Creates `.env.sync` if missing, then appends `key=` with its comment unless already declared. */
+export function appendEnvVariable(
+  cwd: string,
+  key: string,
+  comment: string,
+): { written: boolean } {
+  writeSecretsTemplate(cwd);
+  if (hasEnvKey(cwd, key)) return { written: false };
+
+  const path = join(cwd, SECRETS_FILE);
+  const content = readFileSync(path, 'utf8');
+  const commentLines = comment
+    .split('\n')
+    .map((l) => `# ${l}`)
+    .join('\n');
+  writeFileSync(
+    path,
+    content.replace(/\n*$/, '') + `\n${commentLines}\n${key}=\n`,
+    'utf8',
+  );
+  return { written: true };
 }
 
 /** Order: an explicit argument, then the file, then the environment (CI has only that one). */

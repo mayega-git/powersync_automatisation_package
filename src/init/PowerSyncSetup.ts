@@ -2,6 +2,8 @@ import { execSync } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
+import { appendEnvVariable, hasEnvKey, SECRETS_FILE } from './SecretsFile.js';
+
 /** The engine's package, browser side. */
 export const ENGINE_PACKAGE = '@powersync/web';
 
@@ -143,27 +145,31 @@ function ignoreWorkers(cwd: string): Step {
   );
 }
 
-/** Declares the variable in the environment EXAMPLE, not the real file, which holds real values. */
+/**
+ * Written to `.env.sync` -- the one file this module always owns, so this
+ * step never has to guess the host project's own env-file convention
+ * (`.env.local`, `.env`, `.env.development.local`, ...). Next.js does NOT
+ * load `.env.sync` itself: the detail below says so, every time, so this
+ * step never looks more finished than it is.
+ */
 function declareVariable(cwd: string): Step {
-  const path = join(cwd, '.env.example');
-  if (!existsSync(path)) {
-    return {
-      name: URL_VARIABLE,
-      state: 'manual',
-      detail: 'no .env.example in this project',
-    };
+  if (hasEnvKey(cwd, URL_VARIABLE)) {
+    return { name: URL_VARIABLE, state: 'already-set', detail: `already in ${SECRETS_FILE}` };
   }
 
-  const content = readFileSync(path, 'utf8');
-  if (content.includes(URL_VARIABLE)) {
-    return { name: URL_VARIABLE, state: 'already-set' };
-  }
+  appendEnvVariable(
+    cwd,
+    URL_VARIABLE,
+    'Sync engine address, read by the browser -- Next.js does NOT load this ' +
+      'file: copy this value into whichever env file your project loads into ' +
+      'the browser (commonly .env.local), under the same name.',
+  );
 
-  const addition =
-    `\n# Sync engine address, read by the browser.\n` +
-    `${URL_VARIABLE}=\n`;
-  writeFileSync(path, content.replace(/\n*$/, '') + addition, 'utf8');
-  return { name: URL_VARIABLE, state: 'done' };
+  return {
+    name: URL_VARIABLE,
+    state: 'manual',
+    detail: `set in ${SECRETS_FILE} -- copy it into your real env file too (Next.js does not read ${SECRETS_FILE})`,
+  };
 }
 
 export const BUNDLER_BLOCK = `  // ${BUNDLER_MARKER} -- the engine runs on WASM and Web Workers.
