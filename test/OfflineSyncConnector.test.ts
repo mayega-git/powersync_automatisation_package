@@ -359,3 +359,50 @@ describe('OfflineSyncConnector -- injectable status classification (Fix 2)', () 
     expect(onReauthRequired).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('OfflineSyncConnector -- onDeadLetter callback', () => {
+  it('is called with the recorded entry when a write is definitively rejected', async () => {
+    const onDeadLetter = vi.fn();
+    const logger = new SilentLogger();
+    const db = memoryDb();
+    const connector = new OfflineSyncConnector({
+      http: { send: async () => ({ status: 422, headers: {}, body: {} }) },
+      tokens,
+      deadLetters: new DeadLetterStore({ db }),
+      errors: new ErrorHandlerRegistry({ logger }),
+      logger,
+      syncEndpoint: 'https://sync.test',
+      onDeadLetter,
+    });
+
+    await connector.uploadData(tx([write()]).transaction);
+
+    expect(onDeadLetter).toHaveBeenCalledTimes(1);
+    expect(onDeadLetter).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: '7',
+        operationId: 'createBlog',
+        code: 422,
+      }),
+    );
+  });
+
+  it('is not called on a retry or a reauth', async () => {
+    const onDeadLetter = vi.fn();
+    const logger = new SilentLogger();
+    const db = memoryDb();
+    const connector = new OfflineSyncConnector({
+      http: { send: async () => ({ status: 500, headers: {}, body: {} }) },
+      tokens,
+      deadLetters: new DeadLetterStore({ db }),
+      errors: new ErrorHandlerRegistry({ logger }),
+      logger,
+      syncEndpoint: 'https://sync.test',
+      onDeadLetter,
+    });
+
+    await connector.uploadData(tx([write()]).transaction).catch(() => undefined);
+
+    expect(onDeadLetter).not.toHaveBeenCalled();
+  });
+});

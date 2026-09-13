@@ -13,5 +13,6 @@
     "noUncheckedIndexedAccess": true,
     "noEmit": true
   },
-  "include": ["src/**/*.ts", "test/**/*.ts", "example/**/*.ts"]
+  "include": ["src/**/*.ts", "test/**/*.ts", "example/**/*.ts"],
+  "exclude": ["src/ui/**", "test/ui/**"]
 }

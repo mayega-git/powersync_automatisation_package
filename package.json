@@ -17,6 +17,10 @@
     "./pwa": {
       "types": "./dist/pwa/index.d.ts",
       "default": "./dist/pwa/index.js"
+    },
+    "./ui": {
+      "types": "./dist/ui/index.d.ts",
+      "default": "./dist/ui/index.js"
     }
   },
   "files": [
@@ -24,9 +28,9 @@
   ],
   "sideEffects": false,
   "scripts": {
-    "prepare": "tsc -p tsconfig.build.json",
-    "build": "tsc -p tsconfig.build.json",
-    "typecheck": "tsc --noEmit",
+    "prepare": "tsc -p tsconfig.build.json && tsc -p tsconfig.ui.build.json",
+    "build": "tsc -p tsconfig.build.json && tsc -p tsconfig.ui.build.json",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.ui.json --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
     "example": "tsx example/main.ts",

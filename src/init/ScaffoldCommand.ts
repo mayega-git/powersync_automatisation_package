@@ -197,6 +197,15 @@ export async function initSync(): Promise<OfflineSync> {
         'session expired: pending writes are kept, sign in again for them to go out',
       );
     },
+    // Called each time a write is definitively rejected (not a network
+    // hiccup: the server said no). Push the news to your own UI here, or to
+    // the display-only element from "@ksm/offline-sync/ui".
+    onDeadLetter: (entry) => {
+      logger.error('write rejected, kept in the dead-letter store', {
+        operationId: entry.operationId,
+        reason: entry.reason,
+      });
+    },
   });
 
   // 5. The bridge: the only object that knows the shape of the engine's writes.

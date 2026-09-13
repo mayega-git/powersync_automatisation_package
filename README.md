@@ -38,11 +38,4 @@ schéma et le branchement du module — en s'arrêtant, si besoin, pour dire
 précisément quoi remplir. Relancer la même commande reprend où elle s'était
 arrêtée. Détail complet dans [`INSTALLATION-CLIENT.md`](INSTALLATION-CLIENT.md).
 
-## Documentation
 
-- [`INSTALLATION-BACKEND.md`](INSTALLATION-BACKEND.md) — installer et
-  configurer le moteur de synchronisation côté serveur.
-- [`EXEMPLE-INSTALLATION-BACKEND.md`](EXEMPLE-INSTALLATION-BACKEND.md) —
-  exemple concret, avec le code réel de l'endpoint de jeton.
-- [`INSTALLATION-CLIENT.md`](INSTALLATION-CLIENT.md) — brancher le module sur
-  une application front-end.

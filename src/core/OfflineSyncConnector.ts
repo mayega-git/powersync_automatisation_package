@@ -1,6 +1,6 @@
 import type { AccessLocalDatabase } from './AccessLocalDatabase.js';
 import { classify, ClassifiedError, type StatusClassifier } from './ClassifiedError.js';
-import type { DeadLetterStore } from './DeadLetterStore.js';
+import type { DeadLetterEntry, DeadLetterStore } from './DeadLetterStore.js';
 import type { ErrorHandlerRegistry } from './ErrorHandlerRegistry.js';
 import type { HttpClient, HttpClientRequest } from './HttpClient.js';
 import type { Logger } from './Logger.js';
@@ -38,6 +38,12 @@ export interface OfflineSyncConnectorOptions {
   db?: AccessLocalDatabase;
   /** Called when the session expired while the device was offline. The queue stays intact. */
   onReauthRequired?: () => void;
+  /**
+   * Called right after a write is definitively rejected and recorded in the
+   * dead-letter store. Lets the host push the news to the user (or its own
+   * UI, see `@ksm/offline-sync/ui`) instead of polling `pendingIssueCount()`.
+   */
+  onDeadLetter?: (entry: DeadLetterEntry) => void;
   /** Overrides how an HTTP status maps to a retry/reject/reauth decision. */
   classifyStatus?: StatusClassifier;
 }
@@ -226,19 +232,23 @@ export class OfflineSyncConnector {
       error,
     });
 
-    await this.o.deadLetters.record({
+    const entry: DeadLetterEntry = {
       id: String(write.clientId),
       operationId,
       payload: JSON.stringify(write.data ?? null),
       code: error.response?.status ?? 0,
       reason: error.reason,
       createdAt: Date.now(),
-    });
+    };
+
+    await this.o.deadLetters.record(entry);
 
     this.o.logger.error('write discarded, recorded in the dead-letter store', {
       operationId,
       reason: error.reason,
     });
+
+    this.o.onDeadLetter?.(entry);
   }
 }
 
