@@ -14,6 +14,17 @@ export class ConfigError extends Error {
   }
 }
 
+/**
+ * Shared with `SchemaCommand.ts`, which throws it as a `SchemaError`
+ * instead when it hits the same missing block later in the chain -- one
+ * wording, recognized by `errorToOutcome` regardless of which of the two
+ * error classes carries it.
+ */
+export const MISSING_POWERSYNC_BLOCK_MESSAGE =
+  'The "powersync" block is missing from the configuration. Set at least ' +
+  "powersync.adminUrl -- the sync engine's admin API URL. Without it, " +
+  'there is nobody to ask for the tables.';
+
 export const CONFIG_TEMPLATE = `# Configuration for @ksm/offline-sync. Versioned.
 # The admin token is NOT here: it lives in .env.sync, ignored by git.
 

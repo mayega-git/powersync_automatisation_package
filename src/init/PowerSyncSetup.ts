@@ -39,15 +39,41 @@ export interface SetupResult {
   steps: Step[];
   /** The block to paste, when the bundler file couldn't be modified. */
   bundlerBlock?: string;
+  /**
+   * Raw stdout+stderr of every real `npm`/`npx` call made during this run,
+   * one entry per command -- for `--verbose` only. Empty when a test-
+   * injected `run` was used instead of the default one, since there is then
+   * nothing real to show.
+   */
+  commandOutput?: string[];
 }
 
-const defaultRun = (command: string, cwd: string): void => {
-  execSync(command, { cwd, stdio: 'inherit' });
-};
+/**
+ * Captures output instead of letting it reach the terminal directly:
+ * normal-mode display never shows raw npm internals, only `--verbose` does
+ * (via `SetupResult.commandOutput`). A failing command still throws, with
+ * its captured output folded into the error message.
+ */
+function capturingRun(captured: string[]): (command: string, cwd: string) => void {
+  return (command, cwd) => {
+    try {
+      const output = execSync(command, { cwd, stdio: 'pipe', encoding: 'utf8' });
+      captured.push(`$ ${command}\n${output}`.trimEnd());
+    } catch (err) {
+      const failure = err as { stdout?: string; stderr?: string; message: string };
+      const output = `${failure.stdout ?? ''}${failure.stderr ?? ''}`.trim();
+      captured.push(`$ ${command}\n${output}`.trimEnd());
+      throw new Error(
+        `"${command}" failed.${output.length > 0 ? ` ${output}` : ` ${failure.message}`}`,
+      );
+    }
+  };
+}
 
 export function setupPowerSync(options: SetupOptions): SetupResult {
   const cwd = options.cwd;
-  const run = options.run ?? defaultRun;
+  const captured: string[] = [];
+  const run = options.run ?? capturingRun(captured);
   const steps: Step[] = [];
 
   steps.push(installEngine(cwd, run));
@@ -59,9 +85,11 @@ export function setupPowerSync(options: SetupOptions): SetupResult {
   const bundler = configureBundler(cwd);
   steps.push(bundler.step);
 
-  return bundler.block !== undefined
-    ? { steps, bundlerBlock: bundler.block }
-    : { steps };
+  return {
+    steps,
+    ...(bundler.block !== undefined ? { bundlerBlock: bundler.block } : {}),
+    ...(captured.length > 0 ? { commandOutput: captured } : {}),
+  };
 }
 
 function installEngine(

@@ -1,6 +1,6 @@
 import { join } from 'node:path';
 
-import { loadConfig } from './ConfigLoader.js';
+import { loadConfig, MISSING_POWERSYNC_BLOCK_MESSAGE } from './ConfigLoader.js';
 import { fetchReplicatedSchema, type ReplicatedSchemaSource } from './AdminSchemaSource.js';
 import {
   filterByBuckets,
@@ -35,11 +35,7 @@ export async function generateSchema(options: SchemaOptions): Promise<SchemaResu
 
   const powersync = config.powersync;
   if (powersync === undefined) {
-    throw new SchemaError(
-      'The "powersync" block is missing from the configuration. Set at least ' +
-        'powersync.adminUrl -- the sync engine\'s admin API URL. Without it, ' +
-        'there is nobody to ask for the tables.',
-    );
+    throw new SchemaError(MISSING_POWERSYNC_BLOCK_MESSAGE);
   }
 
   const token = resolveAdminToken(cwd, options.token);

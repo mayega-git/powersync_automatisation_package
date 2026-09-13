@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { ExecuteCliCommand, type CliOutput } from '../../src/init/Cli.js';
+import { Cli } from '../../src/init/Cli.js';
 import {
   ADMIN_TOKEN_KEY,
   readAdminToken,
@@ -108,32 +108,31 @@ describe('resolution order', () => {
 });
 
 describe('init', () => {
-  function output(): { out: CliOutput; lines: string[] } {
+  function output(): { out: { log: (m: string) => void; error: (m: string) => void }; lines: string[] } {
     const lines: string[] = [];
     return { out: { log: (m) => lines.push(m), error: (m) => lines.push(m) }, lines };
   }
 
-  it('writes both files and has the one carrying the secret ignored', () => {
+  it('writes both files and has the one carrying the secret ignored', async () => {
     const cwd = project();
     const { out, lines } = output();
-    new ExecuteCliCommand(out).init(cwd);
+    const code = await new Cli(out).run(['init'], cwd);
 
+    expect(code).toBe(0);
     expect(readFileSync(join(cwd, SECRETS_FILE), 'utf8')).toContain(ADMIN_TOKEN_KEY);
     expect(readFileSync(join(cwd, '.gitignore'), 'utf8')).toContain(SECRETS_FILE);
     expect(lines.join('\n')).toContain(SECRETS_FILE);
   });
 
-  it('does not add the line to .gitignore twice', () => {
+  it('does not add the line to .gitignore twice', async () => {
     const cwd = project();
     const { out } = output();
-    new ExecuteCliCommand(out).init(cwd);
-    // The configuration already exists: init throws, but .gitignore must not
-    // receive a second line because of it.
-    try {
-      new ExecuteCliCommand(out).init(cwd);
-    } catch {
-      /* expected */
-    }
+    await new Cli(out).run(['init'], cwd);
+    // The configuration already exists on the second call: it reports a
+    // problem instead of writing again, but .gitignore must not receive a
+    // second line because of it.
+    await new Cli(out).run(['init'], cwd);
+
     const lines = readFileSync(join(cwd, '.gitignore'), 'utf8')
       .split('\n')
       .filter((l) => l.trim() === SECRETS_FILE);
