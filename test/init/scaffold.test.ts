@@ -7,7 +7,6 @@ import { INIT_FILE, scaffold, TOKENS_FILE } from '../../src/init/ScaffoldCommand
 import type { SyncConfig } from '../../src/init/types.js';
 
 const config: SyncConfig = {
-  routes: { browser: ['src/lib/api'] },
   powersync: {
     adminUrl: 'http://engine.test',
     buckets: [],

@@ -120,10 +120,8 @@ export class ExecuteCliCommand {
 
     const declaration = loadEntities(options.cwd, options.path);
     const r = checkEntities({
-      cwd: options.cwd,
       declaration,
       schema: readSchemaFile(options.cwd, schemaFile),
-      directories: config.routes.browser,
     });
 
     writeEntitiesModule(
@@ -164,8 +162,7 @@ export class ExecuteCliCommand {
     this.writeSecrets(cwd);
     this.out.log('');
     this.out.log('To fill in before continuing:');
-    this.out.log('  routes.browser -- where browser calls live');
-    this.out.log('  powersync      -- where to reach the sync engine (optional)');
+    this.out.log('  powersync -- where to reach the sync engine (optional)');
     this.out.log('');
     this.out.log(
       'Next: "offline-sync schema", then "offline-sync entites" to declare ' +

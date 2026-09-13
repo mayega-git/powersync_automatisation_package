@@ -17,11 +17,6 @@ export class ConfigError extends Error {
 export const CONFIG_TEMPLATE = `# Configuration for @ksm/offline-sync. Versioned.
 # The admin token is NOT here: it lives in .env.sync, ignored by git.
 
-# Where browser calls live -- the only face "check-entites" can compare
-# offline-sync.entites.yaml against.
-routes:
-  browser: []      # e.g. ["src/lib/api"]
-
 # Where to reach the sync engine, and what belongs to this platform.
 # OPTIONAL -- only used by the "schema" command.
 powersync:
@@ -61,18 +56,6 @@ export function loadConfig(cwd: string): SyncConfig {
   const o = raw as Record<string, unknown>;
   checkIndentation(o);
 
-  const rawRoutes = (o['routes'] ?? {}) as Record<string, unknown>;
-  const routes = {
-    browser: toStringArray(rawRoutes['browser']),
-  };
-  if (routes.browser.length === 0) {
-    throw new ConfigError(
-      'routes.browser is empty: it is where browser calls live, the only ones ' +
-        'the module can intercept offline. Without them, "check-entites" has ' +
-        'nothing to compare the declaration against.',
-    );
-  }
-
   const rawPowersync = (o['powersync'] ?? {}) as Record<string, unknown>;
   const adminUrl = typeof rawPowersync['adminUrl'] === 'string' ? rawPowersync['adminUrl'] : '';
   const powersync: PowerSyncAdminSpec | undefined =
@@ -92,12 +75,11 @@ export function loadConfig(cwd: string): SyncConfig {
         }
       : undefined;
 
-  return { routes, ...(powersync !== undefined ? { powersync } : {}) };
+  return { ...(powersync !== undefined ? { powersync } : {}) };
 }
 
 /** Keys that can only legitimately live under another one -- used to catch a lost indentation level. */
 const EXPECTED_PARENT: Record<string, string> = {
-  browser: 'routes',
   adminUrl: 'powersync',
   buckets: 'powersync',
   schemaFile: 'powersync',

@@ -105,66 +105,30 @@ describe('reading the declaration', () => {
 });
 
 describe('checking the declaration', () => {
-  const pathsInCode = (paths: string[]) => () => new Set(paths);
-
   it('accepts a declaration that holds up', () => {
     const r = checkEntities({
-      cwd: '/x',
       declaration: { tag_entity: '/api/education/tags' },
       schema: SCHEMA,
-      directories: ['src/lib/api'],
-      pathsInCodeFn: pathsInCode(['/api/education/tags']),
     });
     expect(r.ok).toBe(true);
   });
 
   it('refuses a table that does not exist in the engine schema', () => {
     const r = checkEntities({
-      cwd: '/x',
       declaration: { tag_entiti: '/api/education/tags' },
       schema: SCHEMA,
-      directories: ['src/lib/api'],
-      pathsInCodeFn: pathsInCode(['/api/education/tags']),
     });
     expect(r.ok).toBe(false);
     expect(r.errors[0]!.message).toContain('is not replicated');
   });
 
-  it('refuses a path that appears nowhere in the code', () => {
-    const r = checkEntities({
-      cwd: '/x',
-      declaration: { tag_entity: '/api/education/labels' },
-      schema: SCHEMA,
-      directories: ['src/lib/api'],
-      pathsInCodeFn: pathsInCode(['/api/education/tags']),
-    });
-    expect(r.ok).toBe(false);
-    expect(r.errors[0]!.message).toContain("doesn't appear anywhere");
-  });
-
-  it('accepts a prefix that only its child paths carry', () => {
-    // A table whose code only calls /tags/${id}: the prefix is correct, it
-    // simply never appears alone.
-    const r = checkEntities({
-      cwd: '/x',
-      declaration: { tag_entity: '/api/education/tags' },
-      schema: SCHEMA,
-      directories: ['src/lib/api'],
-      pathsInCodeFn: pathsInCode(['/api/education/tags/{}']),
-    });
-    expect(r.ok).toBe(true);
-  });
-
   it('reports a prefix that swallows another table\'s path', () => {
     const r = checkEntities({
-      cwd: '/x',
       declaration: {
         tag_entity: '/api/education',
         category_entity: ['GET /api/education/categories'],
       },
       schema: SCHEMA,
-      directories: ['src/lib/api'],
-      pathsInCodeFn: pathsInCode(['/api/education', '/api/education/categories']),
     });
     expect(r.ok).toBe(false);
     expect(r.errors.some((e) => e.message.includes('covers'))).toBe(true);
@@ -172,11 +136,8 @@ describe('checking the declaration', () => {
 
   it('says what to do when the schema is missing, instead of letting it pass', () => {
     const r = checkEntities({
-      cwd: '/x',
       declaration: { tag_entity: '/api/education/tags' },
       schema: undefined,
-      directories: ['src/lib/api'],
-      pathsInCodeFn: pathsInCode(['/api/education/tags']),
     });
     expect(r.ok).toBe(false);
     expect(r.errors[0]!.message).toContain('offline-sync schema');
