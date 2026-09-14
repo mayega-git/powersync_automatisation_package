@@ -260,12 +260,28 @@ export function errorToOutcome(err: unknown, context: ErrorContext): Outcome {
         details: [],
       };
     }
+    // A wrong/expired token is a refusal (401/403), not a missing one (that
+    // case is handled above): it isn't in offline-sync.config.yaml either,
+    // it's the PS_ADMIN_TOKEN value in .env.sync that doesn't match.
+    if (err.message.includes('refused the token')) {
+      return {
+        state: 'blocked',
+        command: context.command,
+        headline: 'Setup incomplete',
+        reason: err.message,
+        fix: { file: SECRETS_FILE, key: ADMIN_TOKEN_KEY, steps: [] },
+        nextCommand,
+        resumable: true,
+        details: [],
+      };
+    }
+
     return {
       state: 'blocked',
       command: context.command,
       headline: 'Unable to fetch the schema',
       reason: err.message,
-      fix: { file: 'offline-sync.config.yaml', steps: [] },
+      fix: { file: 'offline-sync.config.yaml', key: 'powersync.adminUrl', steps: [] },
       nextCommand,
       resumable: true,
       details: [],
