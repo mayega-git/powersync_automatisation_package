@@ -20,8 +20,8 @@ import { powerSyncStepsToFunctional } from './presentation/steps.js';
 import type { FunctionalStep, Outcome } from './presentation/types.js';
 import {
   errorToOutcome,
-  toCheckEntitesOutcome,
-  toEntitesOutcome,
+  toCheckEntitiesOutcome,
+  toEntitiesOutcome,
   toInitOutcome,
   toPowersyncOutcome,
   toScaffoldOutcome,
@@ -34,7 +34,7 @@ export type { CliOutput };
 /** Next to the schema: both generated, never touched by hand, imported by the same wiring. */
 function modulePath(cwd: string, schemaFile: string): string {
   const dir = dirname(isAbsolute(schemaFile) ? schemaFile : join(cwd, schemaFile));
-  return join(dir, 'entites.ts');
+  return join(dir, 'entities.ts');
 }
 
 /** Shared by the standalone `init` command and the `setup` chain. */
@@ -50,7 +50,7 @@ function runInit(cwd: string): InitResult {
   };
 }
 
-function runEntites(cwd: string, path?: string): Outcome {
+function runEntities(cwd: string, path?: string): Outcome {
   const config = loadConfig(cwd);
   const schemaFile = config.powersync?.schemaFile ?? SCHEMA_FILE;
   const schema = readSchemaFile(cwd, schemaFile);
@@ -69,10 +69,10 @@ function runEntites(cwd: string, path?: string): Outcome {
     writeEntitiesModule(loadEntities(cwd, path), modulePath(cwd, schemaFile), new Date().toISOString());
   }
 
-  return toEntitesOutcome({ written: r.written, tableCount: schema.tables.length, missing: r.missing });
+  return toEntitiesOutcome({ written: r.written, tableCount: schema.tables.length, missing: r.missing });
 }
 
-function runCheckEntites(cwd: string, path?: string): Outcome {
+function runCheckEntities(cwd: string, path?: string): Outcome {
   const config = loadConfig(cwd);
   const schemaFile = config.powersync?.schemaFile ?? SCHEMA_FILE;
   const declaration = loadEntities(cwd, path);
@@ -80,7 +80,7 @@ function runCheckEntites(cwd: string, path?: string): Outcome {
   const r = checkEntities({ declaration, schema: readSchemaFile(cwd, schemaFile) });
   writeEntitiesModule(declaration, modulePath(cwd, schemaFile), new Date().toISOString());
 
-  return toCheckEntitesOutcome(r);
+  return toCheckEntitiesOutcome(r);
 }
 
 export interface ChainOptions {
@@ -185,7 +185,7 @@ export async function runSetup(options: ChainOptions): Promise<Outcome> {
     headline: 'Setup complete',
     steps,
     summary: ['Edit tokens.ts -- where this application gets its tokens from.'],
-    nextCommand: 'offline-sync entites',
+    nextCommand: 'offline-sync entities',
     details: [...schemaDetails, ...scaffoldDetails],
   };
 }
@@ -231,16 +231,16 @@ export class Cli {
         return toSchemaOutcome(await generateSchema({ cwd }));
       case 'scaffold':
         return toScaffoldOutcome(scaffold({ cwd }));
-      case 'entites':
-        return runEntites(cwd);
-      case 'check-entites':
-        return runCheckEntites(cwd);
+      case 'entities':
+        return runEntities(cwd);
+      case 'check-entities':
+        return runCheckEntities(cwd);
       default:
         return {
           state: 'error',
           command: 'setup',
           headline: command === undefined ? 'No command given' : `Unknown command: "${command}"`,
-          problem: 'Expected one of: setup, powersync, init, schema, scaffold, entites, check-entites.',
+          problem: 'Expected one of: setup, powersync, init, schema, scaffold, entities, check-entities.',
           nextCommand: 'offline-sync setup',
           details: [{ label: 'argv', value: argv.join(' ') }],
         };

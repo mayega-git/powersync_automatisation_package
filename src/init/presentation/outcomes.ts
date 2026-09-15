@@ -114,7 +114,7 @@ export function toSchemaOutcome(result: SchemaResult): Outcome {
     command: 'schema',
     headline: `Schema fetched${reduced ? ' with reduced accuracy' : ''}: ${result.schema.tables.length} tables, ${bucketCount} buckets`,
     reason: reduced ? 'Some unusual query shapes may not have been detected.' : undefined,
-    nextCommand: 'offline-sync entites',
+    nextCommand: 'offline-sync entities',
     details,
   };
 }
@@ -128,7 +128,7 @@ export function toScaffoldOutcome(result: ScaffoldResult): Outcome {
       'Edit tokens.ts -- where this application gets its tokens from.',
       'init.ts is generated automatically; only tokens.ts needs your input.',
     ],
-    nextCommand: 'offline-sync entites',
+    nextCommand: 'offline-sync entities',
     details: result.files.map((f) => ({
       label: f.path,
       value: f.written ? 'written' : (f.reason ?? 'already exists'),
@@ -136,20 +136,20 @@ export function toScaffoldOutcome(result: ScaffoldResult): Outcome {
   };
 }
 
-export interface EntitesResult {
+export interface EntitiesResult {
   written: boolean;
   tableCount: number;
   missing: string[];
 }
 
-export function toEntitesOutcome(result: EntitesResult): Outcome {
+export function toEntitiesOutcome(result: EntitiesResult): Outcome {
   if (result.written) {
     return {
       state: 'success',
-      command: 'entites',
+      command: 'entities',
       headline: 'Entity declaration created',
       summary: [`${result.tableCount} table(s) added, ready to fill in paths.`],
-      nextCommand: 'offline-sync check-entites',
+      nextCommand: 'offline-sync check-entities',
       details: [],
     };
   }
@@ -157,31 +157,31 @@ export function toEntitesOutcome(result: EntitesResult): Outcome {
   if (result.missing.length === 0) {
     return {
       state: 'success',
-      command: 'entites',
+      command: 'entities',
       headline: 'Entity declaration already exists',
-      nextCommand: 'offline-sync check-entites',
+      nextCommand: 'offline-sync check-entities',
       details: [],
     };
   }
 
   return {
     state: 'warning',
-    command: 'entites',
+    command: 'entities',
     headline: 'Entity declaration is missing tables',
     reason:
       `${result.missing.length} replicated table(s) never appear in it. A missing ` +
       'table is never intercepted, and nothing says so at runtime.',
-    fix: { file: 'offline-sync.entites.yaml', steps: result.missing.map((t) => `Add a path for "${t}"`) },
-    nextCommand: 'offline-sync check-entites',
+    fix: { file: 'offline-sync.entities.yaml', steps: result.missing.map((t) => `Add a path for "${t}"`) },
+    nextCommand: 'offline-sync check-entities',
     details: [],
   };
 }
 
-export function toCheckEntitesOutcome(result: EntitiesCheckResult): Outcome {
+export function toCheckEntitiesOutcome(result: EntitiesCheckResult): Outcome {
   if (result.ok) {
     return {
       state: 'success',
-      command: 'check-entites',
+      command: 'check-entities',
       headline: 'Entity declaration is valid',
       summary: [`${result.tables.length} table(s), ${result.paths.length} path(s) confirmed.`],
       details: [],
@@ -190,12 +190,12 @@ export function toCheckEntitesOutcome(result: EntitiesCheckResult): Outcome {
 
   return {
     state: 'error',
-    command: 'check-entites',
+    command: 'check-entities',
     headline: 'Entity declaration has problems',
     problem: `${result.errors.length} problem(s) found in the declaration.`,
     reason: result.errors.map((e) => `- ${e.subject}: ${e.message}`).join('\n'),
-    fix: { file: 'offline-sync.entites.yaml', steps: ['Fix the issues listed above.'] },
-    nextCommand: 'offline-sync check-entites',
+    fix: { file: 'offline-sync.entities.yaml', steps: ['Fix the issues listed above.'] },
+    nextCommand: 'offline-sync check-entities',
     details: [],
   };
 }
@@ -294,7 +294,7 @@ export function errorToOutcome(err: unknown, context: ErrorContext): Outcome {
       command: context.command,
       headline: 'Entity declaration problem',
       reason: err.message,
-      fix: { file: 'offline-sync.entites.yaml', steps: [] },
+      fix: { file: 'offline-sync.entities.yaml', steps: [] },
       nextCommand,
       resumable: true,
       details: [],

@@ -6,8 +6,8 @@ export type CommandName =
   | 'powersync'
   | 'schema'
   | 'scaffold'
-  | 'entites'
-  | 'check-entites'
+  | 'entities'
+  | 'check-entities'
   | 'setup';
 
 /** State of one user-meaningful step, never a 1:1 mirror of an internal operation. */

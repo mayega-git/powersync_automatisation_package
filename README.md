@@ -38,4 +38,16 @@ schéma et le branchement du module — en s'arrêtant, si besoin, pour dire
 précisément quoi remplir. Relancer la même commande reprend où elle s'était
 arrêtée. Détail complet dans [`INSTALLATION-CLIENT.md`](INSTALLATION-CLIENT.md).
 
+## Étape suivante
+
+```bash
+npx offline-sync entities
+```
+
+Elle écrit `offline-sync.entities.yaml`, une ligne par table répliquée. Son
+rôle : dire au module quelle requête HTTP appartient à quelle table — c'est
+sur cette déclaration, et seulement elle, que le module s'appuie pour
+intercepter une requête, jamais en devinant depuis le code de l'application.
+Une fois les chemins remplis, `npx offline-sync check-entities` confronte la
+déclaration au schéma du moteur.
 

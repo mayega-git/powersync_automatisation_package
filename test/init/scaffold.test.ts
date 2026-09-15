@@ -93,11 +93,11 @@ describe('the token provider', () => {
 });
 
 describe('the wiring', () => {
-  it('imports entites and the schema as same-directory siblings', () => {
+  it('imports entities and the schema as same-directory siblings', () => {
     const cwd = project();
     run(cwd);
     const text = read(cwd, INIT_FILE);
-    expect(text).toContain("from './entites'");
+    expect(text).toContain("from './entities'");
     expect(text).toContain("from './schema'");
     expect(text).toContain('tableColumnsFromSchema(AppSchema)');
   });
@@ -109,7 +109,7 @@ describe('the wiring', () => {
       powersync: { ...config.powersync!, schemaFile: 'app/offline/schema.ts' },
     });
     const text = readFileSync(join(cwd, 'app/offline', INIT_FILE), 'utf8');
-    expect(text).toContain("from './entites'");
+    expect(text).toContain("from './entities'");
   });
 
   it('opens the channel LAST', () => {

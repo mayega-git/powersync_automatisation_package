@@ -30,7 +30,7 @@ export interface OfflineSyncOptions {
   /** The sync engine, already built by the application. Never constructed by the module. */
   connector: SyncConnectorPort;
 
-  /** Table-to-request declaration, the content of offline-sync.entites.yaml. */
+  /** Table-to-request declaration, the content of offline-sync.entities.yaml. */
   entities?: EntitiesDeclaration;
 
   /** Real columns of each table. Required as soon as `entities` is provided. */

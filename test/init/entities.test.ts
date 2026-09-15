@@ -13,7 +13,7 @@ import { checkEntities } from '../../src/init/EntitiesChecker.js';
 import type { ReplicatedSchema } from '../../src/init/ReplicatedSchema.js';
 
 function dir(): string {
-  return mkdtempSync(join(tmpdir(), 'entites-'));
+  return mkdtempSync(join(tmpdir(), 'entities-'));
 }
 
 const SCHEMA: ReplicatedSchema = {
@@ -35,7 +35,7 @@ describe('the declaration template', () => {
 
     expect(r.written).toBe(true);
     const text = readFileSync(r.path, 'utf8');
-    expect(text).toContain('entites:');
+    expect(text).toContain('entities:');
     expect(text).toContain('tag_entity:');
     expect(text).toContain('category_entity:');
     expect(text).toContain('to fill in');
@@ -44,8 +44,8 @@ describe('the declaration template', () => {
   it('never replaces an existing file, and says what it is missing', () => {
     const cwd = dir();
     writeFileSync(
-      join(cwd, 'offline-sync.entites.yaml'),
-      'entites:\n  tag_entity: /api/education/tags\n',
+      join(cwd, 'offline-sync.entities.yaml'),
+      'entities:\n  tag_entity: /api/education/tags\n',
       'utf8',
     );
 
@@ -58,13 +58,13 @@ describe('the declaration template', () => {
 describe('reading the declaration', () => {
   function write(content: string): string {
     const cwd = dir();
-    writeFileSync(join(cwd, 'offline-sync.entites.yaml'), content, 'utf8');
+    writeFileSync(join(cwd, 'offline-sync.entities.yaml'), content, 'utf8');
     return cwd;
   }
 
   it('reads the short form and the long form', () => {
     const cwd = write(
-      'entites:\n' +
+      'entities:\n' +
         '  tag_entity: /api/education/tags\n' +
         '  category_entity:\n' +
         '    - GET /api/education/categories\n' +
@@ -81,17 +81,17 @@ describe('reading the declaration', () => {
 
   it('refuses a table set by the template and never filled in', () => {
     // Without this, the table would never be intercepted and nothing would say so.
-    const cwd = write('entites:\n  tag_entity:\n');
+    const cwd = write('entities:\n  tag_entity:\n');
     expect(() => loadEntities(cwd)).toThrow(/with no path at all/);
   });
 
-  it('refuses a file with no entites block', () => {
+  it('refuses a file with no entities block', () => {
     const cwd = write('something_else: 1\n');
     expect(() => loadEntities(cwd)).toThrow(EntitiesError);
   });
 
   it('says where to go when the file does not exist', () => {
-    expect(() => loadEntities(dir())).toThrow(/offline-sync entites/);
+    expect(() => loadEntities(dir())).toThrow(/offline-sync entities/);
   });
 
   it('flattens the paths, regardless of their form', () => {

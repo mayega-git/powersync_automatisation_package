@@ -5,7 +5,7 @@ import { load as parseYaml } from 'js-yaml';
 import type { EntitiesDeclaration, EntityRule } from '../core/EntityRoutes.js';
 import type { ReplicatedSchema } from './ReplicatedSchema.js';
 
-export const ENTITIES_FILE = 'offline-sync.entites.yaml';
+export const ENTITIES_FILE = 'offline-sync.entities.yaml';
 
 export class EntitiesError extends Error {
   constructor(message: string) {
@@ -37,7 +37,7 @@ const HEADER = `# Which table for which requests. WRITTEN BY HAND, versioned.
 # another table's path, but it can't do anything about a prefix that covers
 # a route nobody declared.
 
-entites:
+entities:
 `;
 
 /** Never replaces an existing file: it holds work done by hand. */
@@ -71,7 +71,7 @@ export function loadEntities(
   const fullPath = isAbsolute(path) ? path : join(cwd, path);
   if (!existsSync(fullPath)) {
     throw new EntitiesError(
-      `${path} was not found. Run "offline-sync entites" to write a template ` +
+      `${path} was not found. Run "offline-sync entities" to write a template ` +
         'from the tables the engine replicates.',
     );
   }
@@ -84,16 +84,16 @@ function loadEntitiesFrom(path: string): EntitiesDeclaration {
     throw new EntitiesError(`${path} is empty or malformed.`);
   }
 
-  const entities = (raw as Record<string, unknown>)['entites'];
+  const entities = (raw as Record<string, unknown>)['entities'];
   if (entities === undefined || entities === null) {
     throw new EntitiesError(
-      `${path} has no "entites:" block. It's the only key expected at the ` +
+      `${path} has no "entities:" block. It's the only key expected at the ` +
         'root of the file.',
     );
   }
   if (typeof entities !== 'object' || Array.isArray(entities)) {
     throw new EntitiesError(
-      `The "entites:" block of ${path} isn't a list of tables. Expected ` +
+      `The "entities:" block of ${path} isn't a list of tables. Expected ` +
         'form: a table name, then a prefix or a list of requests.',
     );
   }
@@ -127,7 +127,7 @@ function loadEntitiesFrom(path: string): EntitiesDeclaration {
 /**
  * The TypeScript transcription the application imports, since the browser
  * doesn't read a file off disk -- only what the bundler put in the package.
- * Rewritten by "entites" and by "check-entites", so the two files can't diverge.
+ * Rewritten by "entities" and by "check-entities", so the two files can't diverge.
  */
 export function writeEntitiesModule(
   declaration: EntitiesDeclaration,
@@ -147,12 +147,12 @@ export function writeEntitiesModule(
  * GENERATED from ${ENTITIES_FILE} on ${generatedAt}.
  *
  * DO NOT EDIT: this file is the transcription of the YAML, rewritten on
- * every "offline-sync entites" and "offline-sync check-entites". The YAML is
+ * every "offline-sync entities" and "offline-sync check-entities". The YAML is
  * the only thing written by hand.
  */
 import type { EntitiesDeclaration } from '@ksm/offline-sync';
 
-export const entites: EntitiesDeclaration = {
+export const entities: EntitiesDeclaration = {
 ${lines.join('\n')}
 };
 `;

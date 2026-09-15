@@ -152,7 +152,7 @@ import {
   tableColumnsFromSchema,
 } from '@ksm/offline-sync/powersync';
 
-import { entites } from './entites';
+import { entities } from './entities';
 import { AppSchema } from './schema';
 import { ApplicationTokens } from './tokens';
 
@@ -214,13 +214,13 @@ export async function initSync(): Promise<OfflineSync> {
   // 6. The module. It asks the bridge for the database -- the application
   //    never gives it directly.
   //
-  //    "entites" says which table for which requests; "tableColumns" says
+  //    "entities" says which table for which requests; "tableColumns" says
   //    what columns those tables really carry. With both, the module
   //    composes its own SQL at request time -- no handlers to write, no
   //    operations map to keep in sync.
   const sync = await OfflineSync.create({
     connector: bridge,
-    entities: entites,
+    entities,
     tableColumns: tableColumnsFromSchema(AppSchema),
     logger,
   });
