@@ -120,14 +120,26 @@ export function toSchemaOutcome(result: SchemaResult): Outcome {
 }
 
 export function toScaffoldOutcome(result: ScaffoldResult): Outcome {
+  const summary = [
+    'Edit tokens.ts -- where this application gets its tokens from.',
+    'init.ts and pont.ts are generated automatically; only tokens.ts needs your input.',
+  ];
+
+  // scaffold() always pushes tokens.ts, init.ts, pont.ts, then sw.ts.
+  const sw = result.files[3];
+  if (sw?.written === false) {
+    summary.push(
+      `${sw.path} already exists, not touched -- see docs/pwa.md for what to copy from it into your own Service Worker.`,
+    );
+  } else if (sw?.written === true) {
+    summary.push(`${sw.path} was generated: a minimal Serwist Service Worker, ready to adapt.`);
+  }
+
   return {
     state: 'success',
     command: 'scaffold',
     headline: 'Application wired to the engine',
-    summary: [
-      'Edit tokens.ts -- where this application gets its tokens from.',
-      'init.ts is generated automatically; only tokens.ts needs your input.',
-    ],
+    summary,
     nextCommand: 'offline-sync entities',
     details: result.files.map((f) => ({
       label: f.path,

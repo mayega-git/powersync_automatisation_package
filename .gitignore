@@ -2,6 +2,7 @@ dist
 node_modules
 *.tsbuildinfo
 docs/*
+!docs/pwa.md
 INSTALLATION-BACKEND.md
 INSTALLATION-CLIENT.md
 EXEMPLE-INSTALLATION-BACKEND.md

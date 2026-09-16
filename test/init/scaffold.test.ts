@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
-import { INIT_FILE, scaffold, TOKENS_FILE } from '../../src/init/ScaffoldCommand.js';
+import { INIT_FILE, PONT_FILE, scaffold, SW_FILE, TOKENS_FILE } from '../../src/init/ScaffoldCommand.js';
 import type { SyncConfig } from '../../src/init/types.js';
 
 const config: SyncConfig = {
@@ -27,12 +27,22 @@ function read(cwd: string, name: string): string {
   return readFileSync(join(cwd, 'src/services/offline', name), 'utf8');
 }
 
-describe('the two wiring files', () => {
-  it('drops them next to the schema: the engine folder already exists', () => {
+describe('the wiring files', () => {
+  it('drops tokens.ts, init.ts, pont.ts and sw.ts next to the schema: the engine folder already exists', () => {
     const cwd = project();
     const r = run(cwd);
     expect(r.dir).toBe('src/services/offline');
-    expect(r.files.map((f) => f.written)).toEqual([true, true]);
+    expect(
+      r.files
+        .filter(
+          (f) =>
+            f.path.endsWith(TOKENS_FILE) ||
+            f.path.endsWith(INIT_FILE) ||
+            f.path.endsWith(PONT_FILE) ||
+            f.path.endsWith(SW_FILE),
+        )
+        .map((f) => f.written),
+    ).toEqual([true, true, true, true]);
   });
 
   it('never overwrites an existing file: it holds work done by hand', () => {
@@ -45,8 +55,37 @@ describe('the two wiring files', () => {
     const tokens = r.files.find((f) => f.path.endsWith(TOKENS_FILE));
     expect(tokens?.written).toBe(false);
     expect(tokens?.reason).toMatch(/already exists/);
-    // The other one is still dropped: the two are independent.
+    // The other ones are still dropped: each file is independent.
     expect(r.files.find((f) => f.path.endsWith(INIT_FILE))?.written).toBe(true);
+    expect(r.files.find((f) => f.path.endsWith(PONT_FILE))?.written).toBe(true);
+    expect(r.files.find((f) => f.path.endsWith(SW_FILE))?.written).toBe(true);
+  });
+});
+
+describe('the Service Worker', () => {
+  it('is written next to the other generated files, no configuration needed', () => {
+    const cwd = project();
+    const r = run(cwd);
+    const sw = r.files.find((f) => f.path.endsWith(SW_FILE));
+    expect(sw?.written).toBe(true);
+    const text = read(cwd, SW_FILE);
+    expect(text).toContain('CacheRules');
+    expect(text).toContain('serveFromPage');
+    expect(text).toContain("from './entities'");
+    // The concrete "TO FILL IN" the user asked for: a place to list pages
+    // that must be available offline before anyone has visited them.
+    expect(text).toContain('PAGES_TO_PRECACHE');
+    expect(text).toMatch(/request\.mode === 'navigate'/);
+  });
+
+  it('never overwrites one already there: a stray file is a safety net, not the documented way to reuse an existing Service Worker', () => {
+    const cwd = project();
+    mkdirSync(join(cwd, 'src/services/offline'), { recursive: true });
+    writeFileSync(join(cwd, 'src/services/offline', SW_FILE), 'mine\n', 'utf8');
+
+    const r = run(cwd);
+    expect(read(cwd, SW_FILE)).toBe('mine\n');
+    expect(r.files.find((f) => f.path.endsWith(SW_FILE))?.written).toBe(false);
   });
 });
 

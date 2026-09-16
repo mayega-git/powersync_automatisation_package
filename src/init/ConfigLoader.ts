@@ -86,7 +86,9 @@ export function loadConfig(cwd: string): SyncConfig {
         }
       : undefined;
 
-  return { ...(powersync !== undefined ? { powersync } : {}) };
+  return {
+    ...(powersync !== undefined ? { powersync } : {}),
+  };
 }
 
 /** Keys that can only legitimately live under another one -- used to catch a lost indentation level. */

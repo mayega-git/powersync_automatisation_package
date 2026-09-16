@@ -108,7 +108,7 @@ describe('a replay sent by the module itself', () => {
     // would empty with nothing reaching the server. Observed in the browser
     // before being fixed.
     const headers = new Map([['X-Offline-Sync-Replay', '1']]);
-    expect(rules.isReplay({ get: (n) => headers.get(n) ?? null })).toBe(true);
+    expect(rules.isReplay({ get: (n: string) => headers.get(n) ?? null })).toBe(true);
   });
 
   it('an ordinary request is not one', () => {
