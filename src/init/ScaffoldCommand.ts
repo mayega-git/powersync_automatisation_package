@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
 import { loadConfig } from './ConfigLoader.js';
+import { capturingRun, readManifest } from './PowerSyncSetup.js';
 import { SCHEMA_FILE } from './ReplicatedSchema.js';
 import type { SyncConfig } from './types.js';
 
@@ -12,9 +13,15 @@ export const SW_FILE = 'sw.ts';
 
 export const DEFAULT_TOKEN_ENDPOINT = '/api/auth/powersync-token';
 
+/** What the generated sw.ts is written against; the same package @serwist/turbopack and @serwist/next build on top of. */
+export const SW_PACKAGE = 'serwist';
+export const SW_VERSION = '^9.5.12';
+
 export interface ScaffoldOptions {
   cwd: string;
   loadConfigFn?: (cwd: string) => SyncConfig;
+  /** Overridable in tests: no `npm install` should run during a test suite. */
+  run?: (command: string, cwd: string) => void;
 }
 
 export interface WrittenFile {
@@ -27,11 +34,17 @@ export interface ScaffoldResult {
   files: WrittenFile[];
   /** Directory everything was dropped into. */
   dir: string;
+  /** Packages installed this run, e.g. ["serwist@^9.5.12"] -- empty when sw.ts wasn't written or the package was already there. */
+  installed: string[];
+  /** Raw npm output, one entry per command run -- for --verbose only. */
+  commandOutput?: string[];
 }
 
 export function scaffold(options: ScaffoldOptions): ScaffoldResult {
   const cwd = options.cwd;
   const config = (options.loadConfigFn ?? loadConfig)(cwd);
+  const captured: string[] = [];
+  const run = options.run ?? capturingRun(captured);
 
   const dir = dirname(config.powersync?.schemaFile ?? SCHEMA_FILE);
   const endpoint = config.powersync?.tokenEndpoint ?? DEFAULT_TOKEN_ENDPOINT;
@@ -45,7 +58,17 @@ export function scaffold(options: ScaffoldOptions): ScaffoldResult {
     drop(cwd, join(dir, SW_FILE), serviceWorkerTemplate()),
   ];
 
-  return { dir, files };
+  const installed: string[] = [];
+  const sw = files[3];
+  if (sw?.written === true) {
+    const dependencies = readManifest(cwd)['dependencies'] as Record<string, string> | undefined;
+    if (dependencies?.[SW_PACKAGE] === undefined) {
+      run(`npm install ${SW_PACKAGE}@${SW_VERSION}`, cwd);
+      installed.push(`${SW_PACKAGE}@${SW_VERSION}`);
+    }
+  }
+
+  return { dir, files, installed, ...(captured.length > 0 ? { commandOutput: captured } : {}) };
 }
 
 /** Writes a file, unless it exists: it may hold work done by hand. */
@@ -310,7 +333,10 @@ export async function catchUpFirstVisit(): Promise<void> {
  * yours -- this one is then a reference to consult, not something to keep.
  */
 function serviceWorkerTemplate(): string {
-  return `/**
+  return `/// <reference lib="esnext" />
+/// <reference lib="webworker" />
+
+/**
  * Service Worker. GENERATED once by "offline-sync scaffold", then yours:
  * never rewritten afterward.
  *

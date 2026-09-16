@@ -173,6 +173,7 @@ export async function runSetup(options: ChainOptions): Promise<Outcome> {
   const scaffoldResult = scaffold({
     cwd,
     ...(options.loadConfigFn !== undefined ? { loadConfigFn: options.loadConfigFn } : {}),
+    ...(options.run !== undefined ? { run: options.run } : {}),
   });
   steps[3] = { name: CHAIN_STEP_NAMES[3], state: 'done' };
 

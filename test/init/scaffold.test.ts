@@ -15,12 +15,18 @@ const config: SyncConfig = {
   },
 };
 
-function project(): string {
-  return mkdtempSync(join(tmpdir(), 'offline-sync-scaffold-'));
+function project(dependencies: Record<string, string> = {}): string {
+  const cwd = mkdtempSync(join(tmpdir(), 'offline-sync-scaffold-'));
+  writeFileSync(
+    join(cwd, 'package.json'),
+    JSON.stringify({ name: 'test-project', dependencies }, null, 2),
+    'utf8',
+  );
+  return cwd;
 }
 
-function run(cwd: string, c: SyncConfig = config) {
-  return scaffold({ cwd, loadConfigFn: () => c });
+function run(cwd: string, c: SyncConfig = config, ranCommands: string[] = []) {
+  return scaffold({ cwd, loadConfigFn: () => c, run: (command) => ranCommands.push(command) });
 }
 
 function read(cwd: string, name: string): string {
@@ -76,6 +82,9 @@ describe('the Service Worker', () => {
     // that must be available offline before anyone has visited them.
     expect(text).toContain('PAGES_TO_PRECACHE');
     expect(text).toMatch(/request\.mode === 'navigate'/);
+    // Without this, the file can't be typechecked on its own: the project's
+    // own tsconfig has "dom", not "webworker" (the two can't coexist there).
+    expect(text).toContain('/// <reference lib="webworker" />');
   });
 
   it('never overwrites one already there: a stray file is a safety net, not the documented way to reuse an existing Service Worker', () => {
@@ -86,6 +95,35 @@ describe('the Service Worker', () => {
     const r = run(cwd);
     expect(read(cwd, SW_FILE)).toBe('mine\n');
     expect(r.files.find((f) => f.path.endsWith(SW_FILE))?.written).toBe(false);
+  });
+});
+
+describe('the serwist dependency', () => {
+  it('is installed when sw.ts is written and serwist is missing from package.json', () => {
+    const cwd = project();
+    const ran: string[] = [];
+    const r = run(cwd, config, ran);
+    expect(r.installed).toEqual(['serwist@^9.5.12']);
+    expect(ran.some((c) => c.startsWith('npm install serwist@'))).toBe(true);
+  });
+
+  it('is left alone when already declared in package.json', () => {
+    const cwd = project({ serwist: '^9.0.0' });
+    const ran: string[] = [];
+    const r = run(cwd, config, ran);
+    expect(r.installed).toEqual([]);
+    expect(ran).toEqual([]);
+  });
+
+  it('is not installed when sw.ts already existed: nothing new was generated', () => {
+    const cwd = project();
+    mkdirSync(join(cwd, 'src/services/offline'), { recursive: true });
+    writeFileSync(join(cwd, 'src/services/offline', SW_FILE), 'mine\n', 'utf8');
+
+    const ran: string[] = [];
+    const r = run(cwd, config, ran);
+    expect(r.installed).toEqual([]);
+    expect(ran).toEqual([]);
   });
 });
 

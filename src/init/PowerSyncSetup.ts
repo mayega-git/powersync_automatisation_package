@@ -54,7 +54,7 @@ export interface SetupResult {
  * (via `SetupResult.commandOutput`). A failing command still throws, with
  * its captured output folded into the error message.
  */
-function capturingRun(captured: string[]): (command: string, cwd: string) => void {
+export function capturingRun(captured: string[]): (command: string, cwd: string) => void {
   return (command, cwd) => {
     try {
       const output = execSync(command, { cwd, stdio: 'pipe', encoding: 'utf8' });
@@ -269,7 +269,7 @@ function configureBundler(cwd: string): { step: Step; block?: string } {
   return { step: { name, state: 'done' } };
 }
 
-function readManifest(cwd: string): Record<string, unknown> {
+export function readManifest(cwd: string): Record<string, unknown> {
   const path = join(cwd, 'package.json');
   if (!existsSync(path)) {
     throw new Error(

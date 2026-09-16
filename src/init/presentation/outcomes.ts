@@ -135,16 +135,25 @@ export function toScaffoldOutcome(result: ScaffoldResult): Outcome {
     summary.push(`${sw.path} was generated: a minimal Serwist Service Worker, ready to adapt.`);
   }
 
+  if (result.installed.length > 0) {
+    summary.push(`Installed ${result.installed.join(', ')} -- sw.ts needs it.`);
+  }
+
+  const details = result.files.map((f) => ({
+    label: f.path,
+    value: f.written ? 'written' : (f.reason ?? 'already exists'),
+  }));
+  for (const output of result.commandOutput ?? []) {
+    details.push({ label: 'Command output', value: output });
+  }
+
   return {
     state: 'success',
     command: 'scaffold',
     headline: 'Application wired to the engine',
     summary,
     nextCommand: 'offline-sync entities',
-    details: result.files.map((f) => ({
-      label: f.path,
-      value: f.written ? 'written' : (f.reason ?? 'already exists'),
-    })),
+    details,
   };
 }
 
