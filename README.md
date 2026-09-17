@@ -38,6 +38,24 @@ schéma et le branchement du module — en s'arrêtant, si besoin, pour dire
 précisément quoi remplir. Relancer la même commande reprend où elle s'était
 arrêtée.
 
+### `.env.sync` : quoi en faire
+
+`setup` écrit `.env.sync` (ignoré par git) avec deux valeurs, qui n'ont
+**pas** le même sort :
+
+- `PS_ADMIN_TOKEN`  reste dans `.env.sync`, et nulle part ailleurs. C'est
+  le jeton qui ouvre l'API d'administration du moteur, utilisé uniquement
+  par la commande `schema` (donc par `setup`, qui l'appelle) pour aller
+  chercher le schéma des tables. Il ne doit jamais atteindre le
+  navigateur : le copier dans un fichier lu par le front-end serait
+  l'exposer à n'importe quel visiteur.
+- `NEXT_PUBLIC_POWERSYNC_URL`  l'adresse du moteur, lue par le
+  navigateur. **Next.js ne charge jamais `.env.sync`** : il faut copier
+  cette seule valeur, telle quelle, dans le fichier d'environnement que
+  votre projet charge réellement côté navigateur (le plus souvent
+  `.env.local`), sous le même nom. Sans cette copie, `initSync()` échoue
+  au démarrage avec `NEXT_PUBLIC_POWERSYNC_URL is empty`.
+
 ## Étape suivante
 
 ```bash
@@ -78,7 +96,18 @@ Elle écrit quatre fichiers :
   charge : la liste des pages (`PAGES_TO_PRECACHE`) à rendre disponibles
   hors ligne avant même leur première visite — typiquement celles derrière
   une connexion. Si vous avez déjà un Service Worker actif ailleurs dans
-  le projet, [`pwa.md`](docs/pwa.md) explique pourquoi un seul
+  le projet, [`pwa.md`](pwa.md) explique pourquoi un seul
   Service Worker peut contrôler une page à la fois, et dit précisément
   quoi copier de `sw.ts` dans le vôtre.
+
+Si un dossier `app/` existe (App Router Next.js), elle câble aussi, sans
+rien demander : la route qui compile `sw.ts` en un vrai programme
+téléchargeable, `withSerwist` dans `next.config.*`, et les paquets que ça
+demande (`@serwist/turbopack`, `esbuild-wasm`). Il reste, dans tous les
+cas, deux choses à faire à la main — [`pwa.md`](pwa.md) dit précisément où
+et dans quel ordre :
+1. dire au navigateur d'enregistrer le Service Worker au démarrage
+   (`SerwistProvider`, ou l'équivalent de votre bibliothèque) ;
+2. appeler `initSync()`/`connectBridge()`/`catchUpFirstVisit()` — les trois
+   fichiers existent, mais rien ne les appelle tout seul.
 

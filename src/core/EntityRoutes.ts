@@ -70,23 +70,25 @@ export class EntityRoutes {
       }
 
       for (const line of rule) {
-        const { method, path } = splitDeclaredLine(table, line);
-        const key = `${method} ${path}`;
-        const existing = tableByOperation.get(key);
-        if (existing !== undefined) {
-          throw new EntityRoutesError(
-            `${key} is declared twice: by ${existing} and by ${table}. A ` +
-              "request can't belong to two tables.",
-          );
+        const parsedRequests = parseDeclaredLine(table, line);
+        for (const { method, path } of parsedRequests) {
+          const key = `${method} ${path}`;
+          const existing = tableByOperation.get(key);
+          if (existing !== undefined) {
+            throw new EntityRoutesError(
+              `${key} is declared twice: by ${existing} and by ${table}. A ` +
+                "request can't belong to two tables.",
+            );
+          }
+          tableByOperation.set(key, table);
+          operations.push({
+            operationId: key,
+            method,
+            path,
+            connectivity: 'offline',
+            handle: key,
+          });
         }
-        tableByOperation.set(key, table);
-        operations.push({
-          operationId: key,
-          method,
-          path,
-          connectivity: 'offline',
-          handle: key,
-        });
       }
     }
 
@@ -185,18 +187,28 @@ function normalizePath(table: string, raw: string): string {
   return path;
 }
 
-function splitDeclaredLine(table: string, line: unknown): { method: string; path: string } {
+function parseDeclaredLine(table: string, line: unknown): Array<{ method: string; path: string }> {
   if (typeof line !== 'string') {
     throw new EntityRoutesError(
       `A request declared under ${table} isn't text. Expected form: ` +
-        '"POST /api/education/tags".',
+        '"POST /api/education/tags" or just "/api/education/tags".',
     );
   }
   const parts = line.trim().split(/\s+/);
+  
+  if (parts.length === 1) {
+    const path = parts[0]!;
+    if (!path.startsWith('/')) {
+      throw new EntityRoutesError(`"${path}" (under ${table}) doesn't start with "/".`);
+    }
+    // Si la méthode est omise, on intercepte toutes les méthodes courantes
+    return ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'].map(method => ({ method, path }));
+  }
+
   if (parts.length !== 2) {
     throw new EntityRoutesError(
       `"${line}" (under ${table}) isn't a request. Expected form: a method, a ` +
-        'space, a path -- "POST /api/education/tags".',
+        'space, a path -- "POST /api/education/tags" or just "/api/education/tags".',
     );
   }
   const method = parts[0]!.toUpperCase();
@@ -210,7 +222,7 @@ function splitDeclaredLine(table: string, line: unknown): { method: string; path
   if (!path.startsWith('/')) {
     throw new EntityRoutesError(`"${path}" (under ${table}) doesn't start with "/".`);
   }
-  return { method, path };
+  return [{ method, path }];
 }
 
 function pathStartsWith(segments: readonly string[], prefix: readonly string[]): boolean {

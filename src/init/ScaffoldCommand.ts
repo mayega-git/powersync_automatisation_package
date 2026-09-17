@@ -4,6 +4,7 @@ import { dirname, join } from 'node:path';
 import { loadConfig } from './ConfigLoader.js';
 import { capturingRun, readManifest } from './PowerSyncSetup.js';
 import { SCHEMA_FILE } from './ReplicatedSchema.js';
+import { configureServiceWorkerBuild, writeServiceWorkerRoute } from './ServiceWorkerBuild.js';
 import type { SyncConfig } from './types.js';
 
 export const TOKENS_FILE = 'tokens.ts';
@@ -13,9 +14,19 @@ export const SW_FILE = 'sw.ts';
 
 export const DEFAULT_TOKEN_ENDPOINT = '/api/auth/powersync-token';
 
-/** What the generated sw.ts is written against; the same package @serwist/turbopack and @serwist/next build on top of. */
+/** What the generated sw.ts is written against. */
 export const SW_PACKAGE = 'serwist';
 export const SW_VERSION = '^9.5.12';
+
+/**
+ * Only needed to compile sw.ts into a real, servable Service Worker at
+ * request time (the route written by writeServiceWorkerRoute) -- so only
+ * installed when that route is actually generated.
+ */
+export const SW_BUILD_PACKAGE = '@serwist/turbopack';
+export const SW_BUILD_VERSION = '^9.5.12';
+export const SW_BUILD_ESBUILD_PACKAGE = 'esbuild-wasm';
+export const SW_BUILD_ESBUILD_VERSION = '^0.28.2';
 
 export interface ScaffoldOptions {
   cwd: string;
@@ -34,8 +45,10 @@ export interface ScaffoldResult {
   files: WrittenFile[];
   /** Directory everything was dropped into. */
   dir: string;
-  /** Packages installed this run, e.g. ["serwist@^9.5.12"] -- empty when sw.ts wasn't written or the package was already there. */
+  /** Packages installed this run, e.g. ["serwist@^9.5.12"] -- empty when nothing new was generated or the packages were already there. */
   installed: string[];
+  /** The block to paste, when the bundler config couldn't be modified. */
+  bundlerBlock?: string;
   /** Raw npm output, one entry per command run -- for --verbose only. */
   commandOutput?: string[];
 }
@@ -58,17 +71,48 @@ export function scaffold(options: ScaffoldOptions): ScaffoldResult {
     drop(cwd, join(dir, SW_FILE), serviceWorkerTemplate()),
   ];
 
-  const installed: string[] = [];
+  const toInstall: string[] = [];
+  let bundlerBlock: string | undefined;
   const sw = files[3];
   if (sw?.written === true) {
     const dependencies = readManifest(cwd)['dependencies'] as Record<string, string> | undefined;
     if (dependencies?.[SW_PACKAGE] === undefined) {
-      run(`npm install ${SW_PACKAGE}@${SW_VERSION}`, cwd);
-      installed.push(`${SW_PACKAGE}@${SW_VERSION}`);
+      toInstall.push(`${SW_PACKAGE}@${SW_VERSION}`);
+    }
+
+    // Compiling sw.ts into something the browser can load, and telling it
+    // to register -- neither happens just because the file exists.
+    const route = writeServiceWorkerRoute(cwd, join(dir, SW_FILE));
+    files.push(route);
+    if (route.written) {
+      if (dependencies?.[SW_BUILD_PACKAGE] === undefined) {
+        toInstall.push(`${SW_BUILD_PACKAGE}@${SW_BUILD_VERSION}`);
+      }
+      if (dependencies?.[SW_BUILD_ESBUILD_PACKAGE] === undefined) {
+        toInstall.push(`${SW_BUILD_ESBUILD_PACKAGE}@${SW_BUILD_ESBUILD_VERSION}`);
+      }
+
+      const bundler = configureServiceWorkerBuild(cwd);
+      files.push({
+        path: bundler.step.name,
+        written: bundler.step.state === 'done',
+        ...(bundler.step.detail !== undefined ? { reason: bundler.step.detail } : {}),
+      });
+      bundlerBlock = bundler.block;
     }
   }
 
-  return { dir, files, installed, ...(captured.length > 0 ? { commandOutput: captured } : {}) };
+  if (toInstall.length > 0) {
+    run(`npm install ${toInstall.join(' ')}`, cwd);
+  }
+
+  return {
+    dir,
+    files,
+    installed: toInstall,
+    ...(bundlerBlock !== undefined ? { bundlerBlock } : {}),
+    ...(captured.length > 0 ? { commandOutput: captured } : {}),
+  };
 }
 
 /** Writes a file, unless it exists: it may hold work done by hand. */
@@ -351,12 +395,11 @@ function serviceWorkerTemplate(): string {
  *
  * ORDER MATTERS below: the first rule that matches a request wins. Keep
  * the module's rules BEFORE anything you add (precaching, page caching, an
- * offline fallback...) -- TO FILL IN.
+ * offline fallback...) -- see docs/pwa.md for recommended patterns.
  */
 
 import { CacheRules, serveFromPage } from '@ksm/offline-sync/pwa';
 import {
-  NetworkFirst,
   NetworkOnly,
   Serwist,
   type PrecacheEntry,
@@ -398,40 +441,19 @@ async function readRequest(req: Request, url: URL) {
 
 const BRIDGE_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'] as const;
 
-const PAGES_CACHE = 'offline-sync-pages';
-
-/**
- * TO FILL IN: list here the pages that must be available offline even
- * BEFORE a user has ever opened them -- typically the ones behind a
- * login, which a first-time visitor can't reach to "warm" the cache
- * naturally. Anything a user has actually visited is cached automatically
- * by the "pages" rule below; this list is only for pages nobody has
- * opened yet on this device. Leave empty if that doesn't apply to you.
- *
- * Example: ['/dashboard', '/account'].
- */
-const PAGES_TO_PRECACHE: string[] = [];
-
-async function precachePages(): Promise<void> {
-  if (PAGES_TO_PRECACHE.length === 0) return;
-  const cache = await caches.open(PAGES_CACHE);
-  await Promise.all(
-    PAGES_TO_PRECACHE.map(async (path) => {
-      try {
-        const response = await fetch(path, { credentials: 'include' });
-        if (response.ok) await cache.put(path, response);
-      } catch {
-        // No network right now: try again next time the worker activates.
-      }
-    }),
-  );
-}
-
 const RUNTIME_CACHING: RuntimeCaching[] = [
+  // --- MODULE RULES (mandatory, do not remove or reorder) ---
+
+  // 1. Auth endpoints: never cached, never bridged.
+  //    moduleRules.isAlwaysOnline() covers the paths declared in your config.
   {
     matcher: ({ url }) => moduleRules.isAlwaysOnline(url.pathname),
     handler: new NetworkOnly(),
   },
+
+  // 2. Business API endpoints declared in offline-sync.config.yaml: served
+  //    from the local SQLite database through the page bridge.
+  //    One entry per HTTP method is required -- see docs/pwa.md.
   ...BRIDGE_METHODS.map(
     (method): RuntimeCaching => ({
       method,
@@ -446,15 +468,29 @@ const RUNTIME_CACHING: RuntimeCaching[] = [
         })) as Response,
     }),
   ),
-  {
-    // Pages: network first to stay current, last known version once
-    // offline. A page visited once stays available -- PAGES_TO_PRECACHE
-    // above is only for pages nobody has opened yet.
-    matcher: ({ request }) => request.mode === 'navigate',
-    handler: new NetworkFirst({ cacheName: PAGES_CACHE, networkTimeoutSeconds: 5 }),
-  },
-  // TO FILL IN: anything else specific to your application (an offline
-  // fallback page, long-lived static assets...).
+
+  // --- TO FILL IN: your application's caching strategy ---
+  //
+  // The module handles only the business API (above). You must add rules for
+  // everything else your application needs to work offline. See docs/pwa.md
+  // for complete examples for Next.js, Vite, and Remix.
+  //
+  // Typical additions:
+  //   1. Static assets: CSS, JS chunks, fonts, images, icons.
+  //   2. Pages (navigate requests):
+  //
+  //   {
+  //     matcher: ({ request, url }) =>
+  //       request.mode === 'navigate' && url.origin === self.location.origin,
+  //     handler: new NetworkFirst({ cacheName: 'app-pages', networkTimeoutSeconds: 5 }),
+  //   },
+  //
+  //   3. Pre-cache pages that must be available offline before a first visit:
+  //
+  //   const PAGES_TO_PRECACHE: string[] = []; // e.g. ['/dashboard', '/account']
+  //
+  //   async function precachePages() { /* see docs/pwa.md */ }
+  //   self.addEventListener('activate', (e) => { e.waitUntil(precachePages()); });
 ];
 
 const serwist = new Serwist({
@@ -465,9 +501,5 @@ const serwist = new Serwist({
 });
 
 serwist.addEventListeners();
-
-self.addEventListener('activate', (event) => {
-  event.waitUntil(precachePages());
-});
 `;
 }

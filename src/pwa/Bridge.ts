@@ -87,7 +87,13 @@ export function serveFromPage(options: WorkerSideOptions) {
       url: captured.request.url,
     });
 
-    return options.buildResponse(JSON.stringify(response.entity ?? null), {
+    const body = {
+      ok: response.status === 'Success' || response.status === undefined,
+      source: 'local',
+      payload: response.entity ?? null,
+    };
+
+    return options.buildResponse(JSON.stringify(body), {
       status: 200,
       headers: {
         'Content-Type': 'application/json',
@@ -192,4 +198,20 @@ export function bridgeServiceWorker(options: PageSideOptions): () => void {
 
   options.source.addEventListener('message', listener);
   return () => options.source.removeEventListener?.('message', listener);
+}
+
+/**
+ * Convenience helper to connect an OfflineSync instance to the Service Worker bridge.
+ */
+export function connectBridge(syncInstance: any): () => void {
+  const nav = typeof globalThis !== 'undefined' ? (globalThis as any).navigator : undefined;
+  if (!nav || !nav.serviceWorker) {
+    return () => {};
+  }
+  return bridgeServiceWorker({
+    handles: (req) => syncInstance.handles(req),
+    respond: (req) => syncInstance.interceptRequest(req),
+    source: nav.serviceWorker,
+    logger: syncInstance.logger,
+  });
 }

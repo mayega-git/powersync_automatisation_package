@@ -5,3 +5,4 @@ export {
   renderPendingIssuesList,
   type PendingIssuesSource,
 } from './PendingIssues.js';
+export * from './OfflineSyncProvider.js';

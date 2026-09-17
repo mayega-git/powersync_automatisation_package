@@ -8,6 +8,7 @@ export {
 
 export {
   bridgeServiceWorker,
+  connectBridge,
   serveFromPage,
   BRIDGE_CHANNEL,
   BRIDGE_TIMEOUT_MS,
@@ -25,3 +26,4 @@ export {
   type PatchFetchOptions,
   type ReloadOptions,
 } from './Startup.js';
+export { cleanRscQuery } from './next-rsc.js';

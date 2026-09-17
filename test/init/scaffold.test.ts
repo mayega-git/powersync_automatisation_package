@@ -127,6 +127,44 @@ describe('the serwist dependency', () => {
   });
 });
 
+describe('the Service Worker build (App Router wiring)', () => {
+  it('generates the Serwist route and installs its build dependencies when app/ exists', () => {
+    const cwd = project();
+    mkdirSync(join(cwd, 'app'), { recursive: true });
+
+    const ran: string[] = [];
+    const r = run(cwd, config, ran);
+
+    const route = r.files.find((f) => f.path.includes('serwist'));
+    expect(route?.written).toBe(true);
+    expect(r.installed).toEqual(
+      expect.arrayContaining(['serwist@^9.5.12', '@serwist/turbopack@^9.5.12', 'esbuild-wasm@^0.28.2']),
+    );
+    expect(ran).toHaveLength(1);
+    expect(ran[0]).toContain('npm install');
+    expect(ran[0]).toContain('@serwist/turbopack@');
+    expect(ran[0]).toContain('esbuild-wasm@');
+  });
+
+  it('skips the route, without installing the build dependencies, when there is no App Router', () => {
+    const cwd = project();
+    const ran: string[] = [];
+    const r = run(cwd, config, ran);
+
+    expect(r.installed).toEqual(['serwist@^9.5.12']);
+    expect(r.installed.some((p) => p.startsWith('@serwist/turbopack'))).toBe(false);
+  });
+
+  it('does not force the build dependencies when the project already declares them', () => {
+    const cwd = project({ '@serwist/turbopack': '^9.0.0', 'esbuild-wasm': '^0.25.0' });
+    mkdirSync(join(cwd, 'app'), { recursive: true });
+
+    const ran: string[] = [];
+    const r = run(cwd, config, ran);
+    expect(r.installed).toEqual(['serwist@^9.5.12']);
+  });
+});
+
 describe('the token provider', () => {
   it('sets the endpoint declared in the configuration', () => {
     const cwd = project();

@@ -213,10 +213,16 @@ export const BUNDLER_BLOCK = `  // ${BUNDLER_MARKER} -- the engine runs on WASM 
  * `webpack:` block is left untouched; an unrecognized shape isn't forced --
  * the block is handed back to the caller to paste by hand.
  */
+/** The bundler config file names this command knows how to find, in order. */
+export const BUNDLER_CONFIG_NAMES = ['next.config.ts', 'next.config.mjs', 'next.config.js'];
+
+/** Shared with ServiceWorkerBuild.ts, which needs the same file to wire withSerwist. */
+export function findBundlerConfig(cwd: string): string | undefined {
+  return BUNDLER_CONFIG_NAMES.map((n) => join(cwd, n)).find((p) => existsSync(p));
+}
+
 function configureBundler(cwd: string): { step: Step; block?: string } {
-  const path = ['next.config.ts', 'next.config.mjs', 'next.config.js']
-    .map((n) => join(cwd, n))
-    .find((p) => existsSync(p));
+  const path = findBundlerConfig(cwd);
 
   if (path === undefined) {
     return {

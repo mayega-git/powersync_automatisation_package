@@ -125,24 +125,38 @@ export function toScaffoldOutcome(result: ScaffoldResult): Outcome {
     'init.ts and pont.ts are generated automatically; only tokens.ts needs your input.',
   ];
 
-  // scaffold() always pushes tokens.ts, init.ts, pont.ts, then sw.ts.
+  // scaffold() always pushes tokens.ts, init.ts, pont.ts, then sw.ts, then
+  // (only when sw.ts was newly written) the Serwist route.
   const sw = result.files[3];
+  const route = result.files[4];
+
   if (sw?.written === false) {
     summary.push(
-      `${sw.path} already exists, not touched -- see docs/pwa.md for what to copy from it into your own Service Worker.`,
+      `${sw.path} already exists, not touched -- see pwa.md for what to copy from it into your own Service Worker.`,
     );
   } else if (sw?.written === true) {
     summary.push(`${sw.path} was generated: a minimal Serwist Service Worker, ready to adapt.`);
+    if (route?.written === true) {
+      summary.push(`${route.path} was generated: it's what serves sw.ts as a real Service Worker.`);
+    } else if (route?.reason !== undefined) {
+      summary.push(`Service Worker route not generated (${route.reason}).`);
+    }
   }
 
   if (result.installed.length > 0) {
-    summary.push(`Installed ${result.installed.join(', ')} -- sw.ts needs it.`);
+    summary.push(`Installed ${result.installed.join(', ')}.`);
+  }
+  if (result.bundlerBlock !== undefined) {
+    summary.push('Bundler configuration not wired automatically -- see --verbose for what to paste.');
   }
 
   const details = result.files.map((f) => ({
     label: f.path,
     value: f.written ? 'written' : (f.reason ?? 'already exists'),
   }));
+  if (result.bundlerBlock !== undefined) {
+    details.push({ label: 'Bundler block to paste', value: result.bundlerBlock });
+  }
   for (const output of result.commandOutput ?? []) {
     details.push({ label: 'Command output', value: output });
   }
