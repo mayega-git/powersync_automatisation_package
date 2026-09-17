@@ -2,13 +2,11 @@ import type { HttpRequest } from '../core/HttpRequest.js';
 
 export const BRIDGE_CHANNEL = 'offline-sync:bridge';
 
-/** What the Service Worker sends to the page. */
 export interface BridgeRequest {
   channel: typeof BRIDGE_CHANNEL;
   request: HttpRequest;
 }
 
-/** What the page sends back. `handled: false` means "not for me". */
 export interface BridgeResponse {
   handled: boolean;
   entity?: unknown;
@@ -20,7 +18,6 @@ export const BRIDGE_TIMEOUT_MS = 2000;
 
 interface MessagePortLike {
   postMessage(message: unknown): void;
-  /** Kept wide (`any`) to stay assignable from a real `MessagePort` without importing DOM types. */
   onmessage: ((event: any) => void) | null;
   start?: () => void;
   close?: () => void;
@@ -45,7 +42,6 @@ interface WorkerClients {
 
 export interface WorkerSideOptions {
   clients: WorkerClients;
-  /** `() => new MessageChannel()`, overridable in tests. */
   openChannel: () => MessageChannelLike;
   buildResponse: (body: string, init: { status: number; headers: Record<string, string> }) => unknown;
   goToNetwork: (request: unknown) => Promise<unknown>;
@@ -54,18 +50,36 @@ export interface WorkerSideOptions {
 }
 
 export interface CapturedRequest {
-  /** The browser's `Request` object, passed through as-is if going to the network. */
   raw: unknown;
-  /** The tab that made the request; empty on a navigation. */
   clientId: string;
   request: HttpRequest;
 }
 
-/**
- * Worker side: catch, ask the page, fall back to the network. Returns a
- * function to use as a cache-rule handler; it always resolves, never throws,
- * never waits forever.
- */
+// Convert snake_case keys to camelCase and auto-parse JSON strings
+function formatPayload(data: unknown): unknown {
+  if (Array.isArray(data)) {
+    return data.map(formatPayload);
+  } else if (data !== null && typeof data === 'object') {
+    const formatted: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(data)) {
+      const camelKey = key.replace(/_([a-z])/g, (g) => g[1]!.toUpperCase());
+      
+      // Auto-parse JSON if it looks like JSON
+      if (typeof value === 'string' && (value.startsWith('{') || value.startsWith('['))) {
+        try {
+          formatted[camelKey] = JSON.parse(value);
+        } catch {
+          formatted[camelKey] = formatPayload(value);
+        }
+      } else {
+        formatted[camelKey] = formatPayload(value);
+      }
+    }
+    return formatted;
+  }
+  return data;
+}
+
 export function serveFromPage(options: WorkerSideOptions) {
   const timeout = options.timeoutMs ?? BRIDGE_TIMEOUT_MS;
 
@@ -90,7 +104,7 @@ export function serveFromPage(options: WorkerSideOptions) {
     const body = {
       ok: response.status === 'Success' || response.status === undefined,
       source: 'local',
-      payload: response.entity ?? null,
+      payload: response.entity ? formatPayload(response.entity) : null,
     };
 
     return options.buildResponse(JSON.stringify(body), {
@@ -103,7 +117,6 @@ export function serveFromPage(options: WorkerSideOptions) {
   };
 }
 
-/** The tab that made the request, otherwise any open one: the local database is the same for all. */
 async function findTab(
   clients: WorkerClients,
   clientId: string,
@@ -144,11 +157,8 @@ function ask(
 }
 
 export interface PageSideOptions {
-  /** `sync.handles(request)`. */
   handles: (req: HttpRequest) => boolean;
-  /** `sync.interceptRequest(request)`. */
   respond: (req: HttpRequest) => Promise<{ status: string; entity: unknown }>;
-  /** In practice: `navigator.serviceWorker`. */
   source: {
     addEventListener: (type: string, listener: (event: unknown) => void) => void;
     removeEventListener?: (type: string, listener: (event: unknown) => void) => void;
@@ -161,10 +171,6 @@ interface ReceivedMessage {
   ports?: readonly MessagePortLike[];
 }
 
-/**
- * Page side: listen for the bridge and answer from the local database.
- * Returns a function that unsubscribes. Call once at startup.
- */
 export function bridgeServiceWorker(options: PageSideOptions): () => void {
   const listener = (raw: unknown): void => {
     const event = raw as ReceivedMessage;
@@ -200,9 +206,6 @@ export function bridgeServiceWorker(options: PageSideOptions): () => void {
   return () => options.source.removeEventListener?.('message', listener);
 }
 
-/**
- * Convenience helper to connect an OfflineSync instance to the Service Worker bridge.
- */
 export function connectBridge(syncInstance: any): () => void {
   const nav = typeof globalThis !== 'undefined' ? (globalThis as any).navigator : undefined;
   if (!nav || !nav.serviceWorker) {
