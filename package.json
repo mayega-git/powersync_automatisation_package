@@ -51,7 +51,8 @@
   },
   "peerDependencies": {
     "@powersync/common": "^2.1.0",
-    "@powersync/service-sync-rules": "^0.41.0"
+    "@powersync/service-sync-rules": "^0.41.0",
+    "react": "^18.0.0 || ^19.0.0"
   },
   "devDependencies": {
     "@powersync/common": "^2.1.0",
@@ -60,7 +61,9 @@
     "better-sqlite3": "^11.0.0",
     "tsx": "^4.7.0",
     "typescript": "^5.4.0",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.10",
+    "@types/react": "^18.2.0",
+    "react": "^18.2.0"
   },
   "bin": {
     "offline-sync": "./dist/init/bin.js"
