@@ -40,6 +40,8 @@ export interface SqlBuildInput {
   /** `null` before the first sync. */
   tenantId?: string | null;
   now?: string;
+  /** Join clauses for GET requests */
+  joins?: string[];
   newId?: () => string;
 }
 
@@ -133,7 +135,8 @@ export class SqlBuilder {
       if (name === excluded) continue;
       const column = toSnakeCase(name);
       if (!columns.includes(column)) continue;
-      clauses.push(`${column} = :${column}`);
+      const prefix = (input.joins && input.joins.length > 0) ? `${input.table}.` : '';
+      clauses.push(`${prefix}${column} = :${column}`);
       params[column] = value;
     }
     return { clauses, params };
@@ -161,11 +164,12 @@ export class SqlBuilder {
   }
 
   private buildRead(input: SqlBuildInput, columns: readonly string[]): BuiltStatement {
+    const prefix = (input.joins && input.joins.length > 0) ? `${input.table}.` : '';
     const projection = columns
       .filter((c) => c !== '_metadata')
       .map((c) => {
         const camel = toCamelCase(c);
-        return camel === c ? c : `${c} AS ${camel}`;
+        return camel === c ? `${prefix}${c}` : `${prefix}${c} AS ${camel}`;
       })
       .join(', ');
 
@@ -174,7 +178,7 @@ export class SqlBuilder {
     const where: string[] = [];
 
     if (idHole !== undefined) {
-      where.push('id = :id');
+      where.push(`${prefix}id = :id`);
       params['id'] = input.pathParams[idHole]!;
     }
     const filters = this.pathFilters(input, columns, idHole);
@@ -182,13 +186,17 @@ export class SqlBuilder {
     Object.assign(params, filters.params);
 
     const order = columns.includes('name')
-      ? ' ORDER BY name COLLATE NOCASE'
+      ? ` ORDER BY ${prefix}name COLLATE NOCASE`
       : columns.includes('created_at')
-        ? ' ORDER BY created_at DESC'
+        ? ` ORDER BY ${prefix}created_at DESC`
         : '';
 
+    const joinsClause = (input.joins && input.joins.length > 0)
+      ? ` ${input.joins.join(' ')}`
+      : '';
+
     const sql =
-      `SELECT ${projection} FROM ${input.table}` +
+      `SELECT ${projection} FROM ${input.table}${joinsClause}` +
       (where.length > 0 ? ` WHERE ${where.join(' AND ')}` : '') +
       (idHole === undefined ? order : '');
 

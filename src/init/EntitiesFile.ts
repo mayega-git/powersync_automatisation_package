@@ -16,26 +16,25 @@ export class EntitiesError extends Error {
 
 const HEADER = `# Which table for which requests. WRITTEN BY HAND, versioned.
 #
-# The module guesses nothing: it applies two search rules against this file,
-# and anything not in it goes to the network as before.
+# The module intercepts the requests defined below to query the local SQLite database.
 #
 #   RULE 1, by prefix -- one line covers a whole table:
 #       tag_entity: /api/education/tags
 #     covers listing, creating, reading one row, updating and deleting it.
 #     The longest prefix wins.
 #
-#   RULE 2, by placement -- when a path is out of step, write requests one by
-#     one under the table:
+#   RULE 2, by path and joins -- define an array of endpoints. You can define simple paths
+#     or complex queries with JOINs for GET requests:
 #       category_entity:
-#         - GET    /api/education/categories
-#         - POST   /api/education/categories
-#         - PUT    /api/education/categories/{id}
-#         - DELETE /api/education/categories/{id}
+#         - /api/education/categories
+#         - /api/education/categories/{id}
+#         - path: /api/education/categories/with-tags
+#           method: GET
+#           joins:
+#             - "LEFT JOIN education_tags ON education_tags.category_id = category_entity.id"
 #
-# WATCH OUT FOR A PREFIX TOO WIDE. "/api/education" would also take courses,
-# blogs and podcasts. The module refuses to start when a prefix covers
-# another table's path, but it can't do anything about a prefix that covers
-# a route nobody declared.
+# WATCH OUT FOR AMBIGUOUS COLUMNS in JOINs: make sure your backend can handle the structure
+# returned by SQLite when multiple tables are merged.
 
 entities:
 `;
@@ -112,7 +111,18 @@ function loadEntitiesFrom(path: string): EntitiesDeclaration {
       continue;
     }
     if (Array.isArray(rule)) {
-      out[table] = rule.map((l) => String(l));
+      out[table] = rule.map((l) => {
+        if (typeof l === 'string') return String(l);
+        if (typeof l === 'object' && l !== null) {
+          const obj = l as Record<string, unknown>;
+          return {
+            path: String(obj['path']),
+            method: obj['method'] ? String(obj['method']) : undefined,
+            joins: Array.isArray(obj['joins']) ? obj['joins'].map(String) : undefined,
+          };
+        }
+        throw new EntitiesError(`Invalid rule format for ${table}`);
+      });
       continue;
     }
     throw new EntitiesError(

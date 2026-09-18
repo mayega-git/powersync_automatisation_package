@@ -8,8 +8,9 @@ export class EntityRoutesError extends Error {
   }
 }
 
-/** A string is a prefix (rule 1); an array is a list of `METHOD /path/{hole}` lines (rule 2). */
-export type EntityRule = string | readonly string[];
+/** A string is a prefix (rule 1); an array is a list of paths or request definitions (rule 2). */
+export type RequestDef = { path: string; method?: string; joins?: string[] };
+export type EntityRule = string | readonly (string | RequestDef)[];
 
 export type EntitiesDeclaration = Readonly<Record<string, EntityRule>>;
 
@@ -23,6 +24,7 @@ export interface ResolvedEntity {
   /** Named holes under rule 2 (`{blogId}`); the segment after the prefix is `id` under rule 1. */
   pathParams: Readonly<Record<string, string>>;
   rule: 1 | 2;
+  joins?: string[];
 }
 
 const METHODS = new Set(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE']);
@@ -38,11 +40,13 @@ export class EntityRoutes {
     /** Longest first: the most specific prefix answers first. */
     private readonly prefixes: readonly Prefix[],
     private readonly tableByOperation: ReadonlyMap<string, string>,
+    private readonly joinsByOperation: ReadonlyMap<string, string[]>,
   ) {}
 
   static build(declaration: EntitiesDeclaration): EntityRoutes {
     const operations: OperationMapping[] = [];
     const tableByOperation = new Map<string, string>();
+    const joinsByOperation = new Map<string, string[]>();
     const prefixes: Prefix[] = [];
     const seenPrefixes = new Map<string, string>();
 
@@ -71,7 +75,7 @@ export class EntityRoutes {
 
       for (const line of rule) {
         const parsedRequests = parseDeclaredLine(table, line);
-        for (const { method, path } of parsedRequests) {
+        for (const { method, path, joins } of parsedRequests) {
           const key = `${method} ${path}`;
           const existing = tableByOperation.get(key);
           if (existing !== undefined) {
@@ -81,6 +85,7 @@ export class EntityRoutes {
             );
           }
           tableByOperation.set(key, table);
+          if (joins && joins.length > 0) joinsByOperation.set(key, joins);
           operations.push({
             operationId: key,
             method,
@@ -111,6 +116,7 @@ export class EntityRoutes {
       PathMatchIndex.build(operations),
       prefixes,
       tableByOperation,
+      joinsByOperation,
     );
   }
 
@@ -142,8 +148,9 @@ export class EntityRoutes {
     const matched = this.index.match(normalizedMethod, segments);
     if (matched.status === 'Matched' && matched.operation !== undefined) {
       const table = this.tableByOperation.get(matched.operation.operationId);
+      const joins = this.joinsByOperation.get(matched.operation.operationId);
       if (table !== undefined) {
-        return { table, pathParams: matched.pathParams, rule: 2 };
+        return { table, pathParams: matched.pathParams, rule: 2, joins };
       }
     }
 
@@ -187,7 +194,22 @@ function normalizePath(table: string, raw: string): string {
   return path;
 }
 
-function parseDeclaredLine(table: string, line: unknown): Array<{ method: string; path: string }> {
+function parseDeclaredLine(table: string, line: unknown): Array<{ method: string; path: string; joins?: string[] }> {
+  if (typeof line === 'object' && line !== null) {
+    const obj = line as RequestDef;
+    if (!obj.path || !obj.path.startsWith('/')) {
+      throw new EntityRoutesError(`"${obj.path}" (under ${table}) doesn't start with "/".`);
+    }
+    if (obj.method) {
+      const method = obj.method.toUpperCase();
+      if (!METHODS.has(method)) {
+        throw new EntityRoutesError(`"${method}" isn't a composable HTTP method.`);
+      }
+      return [{ method, path: obj.path, joins: obj.joins }];
+    }
+    return ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'].map(method => ({ method, path: obj.path, joins: obj.joins }));
+  }
+
   if (typeof line !== 'string') {
     throw new EntityRoutesError(
       `A request declared under ${table} isn't text. Expected form: ` +

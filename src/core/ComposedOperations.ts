@@ -69,6 +69,7 @@ export class ComposedOperations {
       table: resolved.table,
       method: req.method,
       pathParams: resolved.pathParams,
+      joins: resolved.joins,
     });
     const translated = this.translate(statement!, resolved);
     const rows = await db.readData(translated.sql, translated.params);
@@ -96,6 +97,7 @@ export class ComposedOperations {
         table: resolved.table,
         method: req.method,
         pathParams: resolved.pathParams,
+        joins: resolved.joins,
         ...(req.body !== undefined ? { body: req.body } : {}),
         metadata: requestId,
         tenantId: tenant,
