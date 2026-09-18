@@ -180,8 +180,13 @@ export function declaredPaths(declaration: EntitiesDeclaration): string[] {
       continue;
     }
     for (const line of rule) {
-      const parts = line.trim().split(/\s+/);
-      if (parts.length === 2) paths.push(parts[1]!);
+      if (typeof line === 'string') {
+        const parts = line.trim().split(/\s+/);
+        if (parts.length === 2) paths.push(parts[1]!);
+        else if (parts.length === 1) paths.push(parts[0]!);
+      } else if (typeof line === 'object' && line !== null) {
+        paths.push(line.path);
+      }
     }
   }
   return paths;
