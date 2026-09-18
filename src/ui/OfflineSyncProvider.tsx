@@ -1,7 +1,19 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { connectBridge } from '../pwa/index.js';
 
-// Ce fichier est conçu pour être utilisé dans un composant "use client" Next.js ou React standard.
+// Ce fichier exporte le Provider React du moteur PowerSync.
+// ⚠️ ATTENTION NEXT.JS (App Router) : 
+// Ce composant utilise des hooks (useState, useEffect) mais NE DÉCLARE PAS "use client".
+// Il ne peut donc pas être importé directement dans un Server Component (ex: layout.tsx).
+// Vous DEVEZ créer un composant "Wrapper" client pour l'utiliser :
+// 
+// // providers/OfflineSyncWrapper.tsx
+// "use client"
+// import { OfflineSyncProvider } from "@ksm/offline-sync/ui";
+// import { initSync } from "@/app/services/offline/init";
+// export function OfflineSyncWrapper({ children }) {
+//    return <OfflineSyncProvider initSync={initSync}>{children}</OfflineSyncProvider>;
+// }
 
 export interface OfflineSyncContextValue {
   isReady: boolean;

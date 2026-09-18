@@ -103,11 +103,25 @@ Elle écrit quatre fichiers :
 Si un dossier `app/` existe (App Router Next.js), elle câble aussi, sans
 rien demander : la route qui compile `sw.ts` en un vrai programme
 téléchargeable, `withSerwist` dans `next.config.*`, et les paquets que ça
-demande (`@serwist/turbopack`, `esbuild-wasm`). Il reste, dans tous les
-cas, deux choses à faire à la main — [`pwa.md`](pwa.md) dit précisément où
-et dans quel ordre :
+demande (`@serwist/turbopack`, `esbuild-wasm`). 
+
+Il reste, dans tous les cas, deux choses à faire à la main (une fois le `scaffold` terminé) — [`pwa.md`](pwa.md) dit précisément où et dans quel ordre :
 1. dire au navigateur d'enregistrer le Service Worker au démarrage
    (`SerwistProvider`, ou l'équivalent de votre bibliothèque) ;
-2. appeler `initSync()`/`connectBridge()`/`catchUpFirstVisit()` — les trois
-   fichiers existent, mais rien ne les appelle tout seul.
+2. Intégrer le `OfflineSyncProvider` dans votre composant racine.
+
+**Attention (App Router Next.js)** : Le `OfflineSyncProvider` utilise des hooks React côté client. Vous ne pouvez pas l'importer directement dans votre `layout.tsx` serveur. **APRÈS avoir exécuté la commande `scaffold`** (qui génère le `init.ts`), vous devez créer un Wrapper client :
+
+```tsx
+// providers/OfflineSyncWrapper.tsx
+"use client"
+import { OfflineSyncProvider } from "@ksm/offline-sync/ui"
+import { initSync } from "@/app/services/offline/init"
+
+export function OfflineSyncWrapper({ children }: { children: React.ReactNode }) {
+  return <OfflineSyncProvider initSync={initSync}>{children}</OfflineSyncProvider>
+}
+```
+
+Ce wrapper doit ensuite être importé et placé dans votre `layout.tsx`, généralement **à l'intérieur** de votre contexte d'authentification.
 
