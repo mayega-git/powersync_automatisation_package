@@ -401,6 +401,8 @@ function serviceWorkerTemplate(): string {
 import { CacheRules, serveFromPage } from '@ksm/offline-sync/pwa';
 import {
   NetworkOnly,
+  NetworkFirst,
+  StaleWhileRevalidate,
   Serwist,
   type PrecacheEntry,
   type RuntimeCaching,
@@ -469,29 +471,38 @@ const RUNTIME_CACHING: RuntimeCaching[] = [
     }),
   ),
 
-  // --- TO FILL IN: your application's caching strategy ---
-  //
-  // The module handles only the business API (above). You must add rules for
-  // everything else your application needs to work offline. See docs/pwa.md
-  // for complete examples for Next.js, Vite, and Remix.
-  //
-  // Typical additions:
-  //   1. Static assets: CSS, JS chunks, fonts, images, icons.
-  //   2. Pages (navigate requests):
-  //
-  //   {
-  //     matcher: ({ request, url }) =>
-  //       request.mode === 'navigate' && url.origin === self.location.origin,
-  //     handler: new NetworkFirst({ cacheName: 'app-pages', networkTimeoutSeconds: 5 }),
-  //   },
-  //
-  //   3. Pre-cache pages that must be available offline before a first visit:
-  //
-  //   const PAGES_TO_PRECACHE: string[] = []; // e.g. ['/dashboard', '/account']
-  //
-  //   async function precachePages() { /* see docs/pwa.md */ }
-  //   self.addEventListener('activate', (e) => { e.waitUntil(precachePages()); });
+  // --- APPLICATION CACHING STRATEGY ---
+
+  // 3. Pages (navigate requests): Network first, fallback to cache
+  {
+    matcher: ({ request, url }) => request.mode === 'navigate' && url.origin === self.location.origin,
+    handler: new NetworkFirst({
+      cacheName: 'app-pages',
+      networkTimeoutSeconds: 5,
+    }),
+  },
+
+  // 4. Static assets (CSS, JS, fonts, images, etc.)
+  {
+    matcher: ({ request }) =>
+      ['style', 'script', 'worker', 'image', 'font'].includes(request.destination),
+    handler: new StaleWhileRevalidate({
+      cacheName: 'app-static-assets',
+    }),
+  }
 ];
+
+const PAGES_TO_PRECACHE: string[] = [
+  // Ex: '/dashboard', '/inventory/movements'
+];
+
+self.addEventListener('install', (event) => {
+  if (PAGES_TO_PRECACHE.length > 0) {
+    event.waitUntil(
+      caches.open('app-pages').then((cache) => cache.addAll(PAGES_TO_PRECACHE))
+    );
+  }
+});
 
 const serwist = new Serwist({
   precacheEntries: self.__SW_MANIFEST,
