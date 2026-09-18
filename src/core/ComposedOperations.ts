@@ -71,6 +71,7 @@ export class ComposedOperations {
       pathParams: resolved.pathParams,
       joins: resolved.joins,
       aggregates: resolved.aggregates,
+      select: resolved.select,
     });
     const translated = this.translate(statement!, resolved);
     const rows = await db.readData(translated.sql, translated.params);

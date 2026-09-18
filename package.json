@@ -8,18 +8,22 @@
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
       "default": "./dist/index.js"
     },
     "./powersync": {
       "types": "./dist/powersync/index.d.ts",
+      "import": "./dist/powersync/index.js",
       "default": "./dist/powersync/index.js"
     },
     "./pwa": {
       "types": "./dist/pwa/index.d.ts",
+      "import": "./dist/pwa/index.js",
       "default": "./dist/pwa/index.js"
     },
     "./ui": {
       "types": "./dist/ui/index.d.ts",
+      "import": "./dist/ui/index.js",
       "default": "./dist/ui/index.js"
     }
   },

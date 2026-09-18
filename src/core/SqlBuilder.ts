@@ -45,6 +45,7 @@ export interface SqlBuildInput {
   joins?: string[];
   /** Aggregate subqueries (nested JSON) */
   aggregates?: AggregateDef[];
+  select?: string;
   newId?: () => string;
 }
 
@@ -168,7 +169,7 @@ export class SqlBuilder {
 
   private buildRead(input: SqlBuildInput, columns: readonly string[]): BuiltStatement {
     const prefix = (input.joins && input.joins.length > 0) ? `${input.table}.` : '';
-    let projection = columns
+    let projection = input.select ? input.select : columns
       .filter((c) => c !== '_metadata')
       .map((c) => {
         const camel = toCamelCase(c);
