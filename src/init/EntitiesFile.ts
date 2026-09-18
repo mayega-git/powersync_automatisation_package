@@ -100,11 +100,7 @@ function loadEntitiesFrom(path: string): EntitiesDeclaration {
   const out: Record<string, EntityRule> = {};
   for (const [table, rule] of Object.entries(entities as Record<string, unknown>)) {
     if (rule === null || rule === undefined) {
-      throw new EntitiesError(
-        `Table ${table} is declared in ${path} but with no path at all. Fill ` +
-          "in the line, or remove the table: a table with no path intercepts " +
-          "nothing, and nothing would say so at runtime.",
-      );
+      continue;
     }
     if (typeof rule === 'string') {
       out[table] = rule;
