@@ -70,9 +70,25 @@ export class ComposedOperations {
       method: req.method,
       pathParams: resolved.pathParams,
       joins: resolved.joins,
+      aggregates: resolved.aggregates,
     });
     const translated = this.translate(statement!, resolved);
     const rows = await db.readData(translated.sql, translated.params);
+
+    if (resolved.aggregates && resolved.aggregates.length > 0) {
+      for (const row of rows) {
+        for (const agg of resolved.aggregates) {
+          const val = row[agg.field];
+          if (typeof val === 'string') {
+            try {
+              row[agg.field] = JSON.parse(val);
+            } catch {
+              // Leave as string if not parsable
+            }
+          }
+        }
+      }
+    }
 
     const single = Object.keys(resolved.pathParams).length > 0;
     return {

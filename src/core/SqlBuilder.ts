@@ -1,5 +1,6 @@
 import type { SqlValue } from './AccessLocalDatabase.js';
 import type { SqlParams } from './SqlTranslator.js';
+import type { AggregateDef } from './EntityRoutes.js';
 
 export class SqlBuildError extends Error {
   constructor(message: string) {
@@ -42,6 +43,8 @@ export interface SqlBuildInput {
   now?: string;
   /** Join clauses for GET requests */
   joins?: string[];
+  /** Aggregate subqueries (nested JSON) */
+  aggregates?: AggregateDef[];
   newId?: () => string;
 }
 
@@ -165,13 +168,22 @@ export class SqlBuilder {
 
   private buildRead(input: SqlBuildInput, columns: readonly string[]): BuiltStatement {
     const prefix = (input.joins && input.joins.length > 0) ? `${input.table}.` : '';
-    const projection = columns
+    let projection = columns
       .filter((c) => c !== '_metadata')
       .map((c) => {
         const camel = toCamelCase(c);
         return camel === c ? `${prefix}${c}` : `${prefix}${c} AS ${camel}`;
       })
       .join(', ');
+
+    if (input.aggregates && input.aggregates.length > 0) {
+      const aggregateSelects = input.aggregates.map((agg) => {
+        const aggColumns = this.columnsFor(agg.table).filter((c) => c !== '_metadata');
+        const jsonFields = aggColumns.map((c) => `'${toCamelCase(c)}', ${agg.table}.${c}`).join(', ');
+        return `(SELECT json_group_array(json_object(${jsonFields})) FROM ${agg.table} WHERE ${agg.on}) AS ${agg.field}`;
+      });
+      projection += ', ' + aggregateSelects.join(', ');
+    }
 
     const idHole = this.idHole(input.pathParams);
     const params: SqlParams = {};

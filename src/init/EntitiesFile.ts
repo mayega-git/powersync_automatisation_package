@@ -115,6 +115,13 @@ function loadEntitiesFrom(path: string): EntitiesDeclaration {
             path: String(obj['path']),
             method: obj['method'] ? String(obj['method']) : undefined,
             joins: Array.isArray(obj['joins']) ? obj['joins'].map(String) : undefined,
+            aggregates: Array.isArray(obj['aggregates']) 
+              ? obj['aggregates'].map((a: any) => ({
+                  field: String(a.field),
+                  table: String(a.table),
+                  on: String(a.on),
+                }))
+              : undefined,
           };
         }
         throw new EntitiesError(`Invalid rule format for ${table}`);

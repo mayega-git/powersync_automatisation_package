@@ -8,8 +8,14 @@ export class EntityRoutesError extends Error {
   }
 }
 
+export interface AggregateDef {
+  field: string;
+  table: string;
+  on: string;
+}
+
 /** A string is a prefix (rule 1); an array is a list of paths or request definitions (rule 2). */
-export type RequestDef = { path: string; method?: string; joins?: string[] };
+export type RequestDef = { path: string; method?: string; joins?: string[]; aggregates?: AggregateDef[] };
 export type EntityRule = string | readonly (string | RequestDef)[];
 
 export type EntitiesDeclaration = Readonly<Record<string, EntityRule>>;
@@ -25,6 +31,7 @@ export interface ResolvedEntity {
   pathParams: Readonly<Record<string, string>>;
   rule: 1 | 2;
   joins?: string[];
+  aggregates?: AggregateDef[];
 }
 
 const METHODS = new Set(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE']);
@@ -41,12 +48,14 @@ export class EntityRoutes {
     private readonly prefixes: readonly Prefix[],
     private readonly tableByOperation: ReadonlyMap<string, string>,
     private readonly joinsByOperation: ReadonlyMap<string, string[]>,
+    private readonly aggregatesByOperation: ReadonlyMap<string, AggregateDef[]>,
   ) {}
 
   static build(declaration: EntitiesDeclaration): EntityRoutes {
     const operations: OperationMapping[] = [];
     const tableByOperation = new Map<string, string>();
     const joinsByOperation = new Map<string, string[]>();
+    const aggregatesByOperation = new Map<string, AggregateDef[]>();
     const prefixes: Prefix[] = [];
     const seenPrefixes = new Map<string, string>();
 
@@ -75,7 +84,7 @@ export class EntityRoutes {
 
       for (const line of rule) {
         const parsedRequests = parseDeclaredLine(table, line);
-        for (const { method, path, joins } of parsedRequests) {
+        for (const { method, path, joins, aggregates } of parsedRequests) {
           const key = `${method} ${path}`;
           const existing = tableByOperation.get(key);
           if (existing !== undefined) {
@@ -86,6 +95,7 @@ export class EntityRoutes {
           }
           tableByOperation.set(key, table);
           if (joins && joins.length > 0) joinsByOperation.set(key, joins);
+          if (aggregates && aggregates.length > 0) aggregatesByOperation.set(key, aggregates);
           operations.push({
             operationId: key,
             method,
@@ -117,6 +127,7 @@ export class EntityRoutes {
       prefixes,
       tableByOperation,
       joinsByOperation,
+      aggregatesByOperation,
     );
   }
 
@@ -149,8 +160,9 @@ export class EntityRoutes {
     if (matched.status === 'Matched' && matched.operation !== undefined) {
       const table = this.tableByOperation.get(matched.operation.operationId);
       const joins = this.joinsByOperation.get(matched.operation.operationId);
+      const aggregates = this.aggregatesByOperation.get(matched.operation.operationId);
       if (table !== undefined) {
-        return { table, pathParams: matched.pathParams, rule: 2, joins };
+        return { table, pathParams: matched.pathParams, rule: 2, joins, aggregates };
       }
     }
 
@@ -194,7 +206,7 @@ function normalizePath(table: string, raw: string): string {
   return path;
 }
 
-function parseDeclaredLine(table: string, line: unknown): Array<{ method: string; path: string; joins?: string[] }> {
+function parseDeclaredLine(table: string, line: unknown): Array<{ method: string; path: string; joins?: string[]; aggregates?: AggregateDef[] }> {
   if (typeof line === 'object' && line !== null) {
     const obj = line as RequestDef;
     if (!obj.path || !obj.path.startsWith('/')) {
@@ -205,9 +217,9 @@ function parseDeclaredLine(table: string, line: unknown): Array<{ method: string
       if (!METHODS.has(method)) {
         throw new EntityRoutesError(`"${method}" isn't a composable HTTP method.`);
       }
-      return [{ method, path: obj.path, joins: obj.joins }];
+      return [{ method, path: obj.path, joins: obj.joins, aggregates: obj.aggregates }];
     }
-    return ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'].map(method => ({ method, path: obj.path, joins: obj.joins }));
+    return ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'].map(method => ({ method, path: obj.path, joins: obj.joins, aggregates: obj.aggregates }));
   }
 
   if (typeof line !== 'string') {
