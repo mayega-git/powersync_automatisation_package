@@ -239,9 +239,19 @@ export async function initSync(): Promise<OfflineSync> {
   }
 
   // 1. The engine. The application builds it, NEVER the module.
+  //
+  //    "worker" is NOT optional under Turbopack: @powersync/web's default
+  //    worker resolution (new URL('./worker.js', import.meta.url)) relies on
+  //    Vite/Webpack rewriting that URL at build time. Turbopack doesn't do
+  //    this, so the worker silently fails to spawn -- no SharedWorker ever
+  //    appears, no connection to the sync engine, no error either. The
+  //    postinstall step ("powersync-web copy-assets -o public") exists
+  //    exactly for this: it drops a working worker.js in public/@powersync/,
+  //    and both options below point at it explicitly.
   const engine = new PowerSyncDatabase({
     schema: AppSchema,
-    database: { dbFilename: DATABASE_FILE },
+    database: { dbFilename: DATABASE_FILE, worker: '/@powersync/worker.js' },
+    sync: { worker: '/@powersync/worker.js' },
   });
 
   // 2. The local database, seen through the module's port.
