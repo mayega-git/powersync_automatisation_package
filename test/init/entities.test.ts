@@ -94,6 +94,28 @@ describe('reading the declaration', () => {
     expect(() => loadEntities(dir())).toThrow(/offline-sync entities/);
   });
 
+  it('reads params and select from the object form (rule 2) -- both used to be silently dropped', () => {
+    const cwd = write(
+      'entities:\n' +
+        '  configuration_item:\n' +
+        '    - path: /api/kernel/manufacturing/configuration/{type}\n' +
+        '      method: GET\n' +
+        '      params:\n' +
+        '        type: item_type\n' +
+        '  product:\n' +
+        '    - path: /api/kernel/product-core/sellable-products\n' +
+        '      method: GET\n' +
+        '      select: "product.id AS productId"\n',
+    );
+    const declaration = loadEntities(cwd);
+    expect(declaration['configuration_item']).toEqual([
+      { path: '/api/kernel/manufacturing/configuration/{type}', method: 'GET', joins: undefined, aggregates: undefined, select: undefined, params: { type: 'item_type' } },
+    ]);
+    expect(declaration['product']).toEqual([
+      { path: '/api/kernel/product-core/sellable-products', method: 'GET', joins: undefined, aggregates: undefined, select: 'product.id AS productId', params: undefined },
+    ]);
+  });
+
   it('flattens the paths, regardless of their form', () => {
     expect(
       declaredPaths({
