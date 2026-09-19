@@ -1,4 +1,5 @@
 import type { AccessLocalDatabase } from './AccessLocalDatabase.js';
+import type { ActivityLog } from './ActivityLog.js';
 import { classify, ClassifiedError } from './ClassifiedError.js';
 import type { ComposedOperations } from './ComposedOperations.js';
 import type { Converter } from './Converter.js';
@@ -27,6 +28,8 @@ export interface InterceptorOptions {
   duplicates?: DuplicateGuard;
   /** Optional: SQL composed from the table declaration, instead of a hand-written handler. */
   composed?: ComposedOperations;
+  /** Optional: records what this interceptor does, for `@ksm/offline-sync/ui`'s activity feed. */
+  activity?: ActivityLog;
 }
 
 export class Interceptor {
@@ -37,6 +40,7 @@ export class Interceptor {
   private readonly logger: Logger;
   private readonly duplicates: DuplicateGuard;
   private readonly composed: ComposedOperations | undefined;
+  private readonly activity: ActivityLog | undefined;
 
   constructor(options: InterceptorOptions) {
     this.converter = options.converter;
@@ -46,6 +50,7 @@ export class Interceptor {
     this.logger = options.logger;
     this.duplicates = options.duplicates ?? new DuplicateGuard();
     this.composed = options.composed;
+    this.activity = options.activity;
   }
 
   async interceptRequest(req: HttpRequest): Promise<Response> {
@@ -65,6 +70,13 @@ export class Interceptor {
         }
         const response = await this.composed.run(this.db, req, entity);
         this.duplicates.remember(req, response);
+        const method = req.method.toUpperCase();
+        this.activity?.record(method === 'GET' || method === 'HEAD' ? 'request-handled' : 'local-write', {
+          table: entity.table,
+          method,
+          url: req.url,
+          source: 'local',
+        });
         return response;
       }
     }
@@ -115,6 +127,7 @@ export class Interceptor {
         operationId: operation.operationId,
       });
       this.duplicates.remember(req, response);
+      this.activity?.record('local-write', { operationId: operation.operationId, method: req.method.toUpperCase() });
       return response;
     }
 
@@ -128,12 +141,22 @@ export class Interceptor {
     try {
       const response = await handler.online(this.http, ctx);
       this.duplicates.remember(req, response);
+      this.activity?.record('request-handled', {
+        operationId: operation.operationId,
+        method: req.method.toUpperCase(),
+        source: 'network',
+      });
       return response;
     } catch (err) {
       const classified = classify(err);
       this.logger.error('online request failed, nothing was queued', {
         operationId: operation.operationId,
         kind: classified.kind,
+        reason: classified.reason,
+      });
+      this.activity?.record('request-failed', {
+        operationId: operation.operationId,
+        method: req.method.toUpperCase(),
         reason: classified.reason,
       });
       throw classified;

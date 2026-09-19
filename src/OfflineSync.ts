@@ -1,4 +1,5 @@
 import type { AccessLocalDatabase } from './core/AccessLocalDatabase.js';
+import { ActivityLog, type ActivityEvent } from './core/ActivityLog.js';
 import { ComposedOperations } from './core/ComposedOperations.js';
 import { Converter } from './core/Converter.js';
 import { EntityRoutes, type EntitiesDeclaration } from './core/EntityRoutes.js';
@@ -56,6 +57,16 @@ export interface OfflineSyncOptions {
 
   /** Duplicate-protection window, when an operation doesn't declare its own. */
   dedupWindowMs?: number;
+
+  /**
+   * Shared trail of module activity, for `@ksm/offline-sync/ui`'s activity
+   * feed. Pass the same instance given to `OfflineSyncConnector` (built
+   * separately, before this call) so events from both sides land in one
+   * feed. Without it, `OfflineSync` creates its own -- `activity()` and
+   * `onActivity()` never throw, but a connector-side event (dead-letter,
+   * reauth) only shows up if the same instance was shared.
+   */
+  activity?: ActivityLog;
 }
 
 export class OfflineSync {
@@ -69,6 +80,7 @@ export class OfflineSync {
     readonly db: AccessLocalDatabase,
     readonly logger: Logger,
     private readonly connector: SyncConnectorPort,
+    private readonly activityLog: ActivityLog,
   ) {}
 
   /** Called once, at application startup. */
@@ -116,6 +128,7 @@ export class OfflineSync {
     }
 
     const deadLetters = new DeadLetterStore({ db });
+    const activityLog = options.activity ?? new ActivityLog();
 
     const duplicates = new DuplicateGuard({
       defaultWindowMs: options.dedupWindowMs ?? DEFAULT_DEDUP_WINDOW_MS,
@@ -132,6 +145,7 @@ export class OfflineSync {
       http,
       logger,
       duplicates,
+      activity: activityLog,
       ...(composed !== undefined ? { composed } : {}),
     });
 
@@ -151,6 +165,7 @@ export class OfflineSync {
       db,
       logger,
       options.connector,
+      activityLog,
     );
   }
 
@@ -190,5 +205,15 @@ export class OfflineSync {
 
   async resolveIssue(id: string): Promise<void> {
     return this.deadLetters.remove(id);
+  }
+
+  /** Recent module activity, oldest first, bounded (see `ActivityLog`). */
+  activity(): readonly ActivityEvent[] {
+    return this.activityLog.list();
+  }
+
+  /** Called on every new activity event, from the moment of subscription onward. */
+  onActivity(listener: (event: ActivityEvent) => void): () => void {
+    return this.activityLog.subscribe(listener);
   }
 }

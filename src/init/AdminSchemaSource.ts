@@ -92,27 +92,55 @@ function viaLibrary(
   return [...byName.values()];
 }
 
-/** Fallback path: read the rules with what's already installed. */
+/**
+ * Fallback path: read the rules with what's already installed. Grouped by
+ * `cited.source` -- the QUALIFIED "schema.table" -- never by the bare local
+ * name: two different Postgres schemas routinely declare a table of the same
+ * bare name (`stock.stock_balance` vs `material_stock.stock_balance`), and
+ * grouping by the bare name would silently merge two unrelated tables into
+ * one, with columns from whichever was read last. A bare name is kept as
+ * the device-side table name only when it names exactly one distinct source
+ * table; a genuine collision is disambiguated by qualifying it instead.
+ */
 function viaLocalReader(connections: unknown, rules: string): ReplicatedTable[] {
   const structure = readStructure(connections);
-  const byName = new Map<string, ReplicatedTable>();
+  const bySource = new Map<string, { local: string; buckets: string[]; columns: ReplicatedColumn[] }>();
 
   for (const bucket of readBuckets(rules)) {
     for (const cited of bucket.tables) {
-      const table = keep(byName, cited.local, bucket.name);
-      const real = structure.get(cited.source) ?? [];
+      let entry = bySource.get(cited.source);
+      if (entry === undefined) {
+        entry = { local: cited.local, buckets: [], columns: [] };
+        bySource.set(cited.source, entry);
+      }
+      if (!entry.buckets.includes(bucket.name)) entry.buckets.push(bucket.name);
 
+      const real = structure.get(cited.source) ?? [];
       if (cited.columns === undefined) {
-        for (const column of real) add(table, column);
+        for (const column of real) addColumn(entry.columns, column);
       } else {
         for (const name of cited.columns) {
-          add(table, real.find((c) => c.name === name) ?? { name, type: 'text' });
+          addColumn(entry.columns, real.find((c) => c.name === name) ?? { name, type: 'text' });
         }
       }
     }
   }
 
-  return [...byName.values()];
+  const bareNameUsers = new Map<string, number>();
+  for (const entry of bySource.values()) {
+    bareNameUsers.set(entry.local, (bareNameUsers.get(entry.local) ?? 0) + 1);
+  }
+
+  return [...bySource.entries()].map(([source, entry]) => ({
+    name: (bareNameUsers.get(entry.local) ?? 0) > 1 ? source.replace('.', '_') : entry.local,
+    columns: entry.columns,
+    buckets: entry.buckets,
+  }));
+}
+
+function addColumn(columns: ReplicatedColumn[], column: ReplicatedColumn | undefined): void {
+  if (column === undefined) return;
+  if (!columns.some((c) => c.name === column.name)) columns.push(column);
 }
 
 /** A table cited in several buckets gives only ONE table client-side. */

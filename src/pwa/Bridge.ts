@@ -1,4 +1,5 @@
 import type { HttpRequest } from '../core/HttpRequest.js';
+import { warnIfNeverControlled } from './Register.js';
 
 export const BRIDGE_CHANNEL = 'offline-sync:bridge';
 
@@ -211,10 +212,18 @@ export function connectBridge(syncInstance: any): () => void {
   if (!nav || !nav.serviceWorker) {
     return () => {};
   }
-  return bridgeServiceWorker({
+  const stopBridge = bridgeServiceWorker({
     handles: (req) => syncInstance.handles(req),
     respond: (req) => syncInstance.interceptRequest(req),
     source: nav.serviceWorker,
     logger: syncInstance.logger,
   });
+  // The bridge above is only ever reached if a Service Worker actually controls this
+  // page -- a registration with too narrow a `scope` wires everything up without error
+  // and then answers nothing, ever. See warnIfNeverControlled's doc comment.
+  const stopWarning = warnIfNeverControlled({ navigator: nav, logger: syncInstance.logger });
+  return () => {
+    stopBridge();
+    stopWarning();
+  };
 }

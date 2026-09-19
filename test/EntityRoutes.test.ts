@@ -117,6 +117,32 @@ describe('rule 2: by placement', () => {
   });
 });
 
+describe('rule 2: a hole that filters a column, not the row id', () => {
+  // configuration_item has an item_type discriminator column: {type} must
+  // filter on it, never be read as the row's own id (see SqlBuilder.idHole).
+  const r = EntityRoutes.build({
+    configuration_item: [
+      { path: '/api/kernel/manufacturing/configuration/{type}', method: 'GET', params: { type: 'item_type' } },
+      { path: '/api/kernel/manufacturing/configuration/{type}/{id}', method: 'PUT' },
+    ],
+  });
+
+  it('carries the mapping through to the resolved entity', () => {
+    const resolved = r.resolve('GET', '/api/kernel/manufacturing/configuration/product-profile');
+    expect(resolved?.paramColumns).toEqual({ type: 'item_type' });
+    expect(resolved?.pathParams).toEqual({ type: 'product-profile' });
+  });
+
+  it('a route with no params declared carries no mapping', () => {
+    const resolved = r.resolve(
+      'PUT',
+      '/api/kernel/manufacturing/configuration/product-profile/row-1',
+    );
+    expect(resolved?.paramColumns).toBeUndefined();
+    expect(resolved?.pathParams).toEqual({ type: 'product-profile', id: 'row-1' });
+  });
+});
+
 describe('what the declaration refuses', () => {
   it('refuses two tables on the same prefix', () => {
     expect(() =>

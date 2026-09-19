@@ -1,4 +1,5 @@
 import type { AccessLocalDatabase } from './AccessLocalDatabase.js';
+import type { ActivityLog } from './ActivityLog.js';
 import { classify, ClassifiedError, type StatusClassifier } from './ClassifiedError.js';
 import type { DeadLetterEntry, DeadLetterStore } from './DeadLetterStore.js';
 import type { ErrorHandlerRegistry } from './ErrorHandlerRegistry.js';
@@ -46,6 +47,8 @@ export interface OfflineSyncConnectorOptions {
   onDeadLetter?: (entry: DeadLetterEntry) => void;
   /** Overrides how an HTTP status maps to a retry/reject/reauth decision. */
   classifyStatus?: StatusClassifier;
+  /** Optional: records dead-letters and reauth events, for `@ksm/offline-sync/ui`'s activity feed. */
+  activity?: ActivityLog;
 }
 
 export class OfflineSyncConnector {
@@ -160,6 +163,7 @@ export class OfflineSyncConnector {
           path: metadata.path,
         });
         this.o.onReauthRequired?.();
+        this.o.activity?.record('reauth-required', { operationId: metadata.operationId });
       }
       throw classified;
     }
@@ -249,6 +253,7 @@ export class OfflineSyncConnector {
     });
 
     this.o.onDeadLetter?.(entry);
+    this.o.activity?.record('dead-letter', { operationId, reason: error.reason });
   }
 }
 

@@ -35,6 +35,14 @@ export interface SqlBuildInput {
   method: string;
   /** The `id`-named hole identifies the row; otherwise the last hole does. */
   pathParams: Readonly<Record<string, string>>;
+  /**
+   * Path-param name -> real column name, for a hole that filters a column
+   * other than the row's own id (e.g. `{type}` -> `item_type`). A hole
+   * listed here is never treated as `id`, however it's positioned in the
+   * path. A hole absent from this map keeps the implicit behaviour: the
+   * last hole (or the one literally named `id`) identifies the row.
+   */
+  paramColumns?: Readonly<Record<string, string>>;
   body?: unknown;
   /** Stored in `_metadata`. */
   metadata?: string;
@@ -121,9 +129,14 @@ export class SqlBuilder {
     return columns.includes('id') ? columns : ['id', ...columns];
   }
 
-  /** `undefined` when the path has no hole at all, i.e. a collection. */
-  private idHole(pathParams: Readonly<Record<string, string>>): string | undefined {
-    const keys = Object.keys(pathParams);
+  /**
+   * `undefined` when the path has no hole at all, i.e. a collection. A hole
+   * mapped in `paramColumns` is never returned here: it names a filter
+   * column, not the row's id, however it's positioned in the path.
+   */
+  private idHole(input: SqlBuildInput): string | undefined {
+    const mapped = input.paramColumns ?? {};
+    const keys = Object.keys(input.pathParams).filter((k) => mapped[k] === undefined);
     if (keys.length === 0) return undefined;
     return keys.includes('id') ? 'id' : keys[keys.length - 1]!;
   }
@@ -137,7 +150,7 @@ export class SqlBuilder {
     const params: SqlParams = {};
     for (const [name, value] of Object.entries(input.pathParams)) {
       if (name === excluded) continue;
-      const column = toSnakeCase(name);
+      const column = input.paramColumns?.[name] ?? toSnakeCase(name);
       if (!columns.includes(column)) continue;
       const prefix = (input.joins && input.joins.length > 0) ? `${input.table}.` : '';
       clauses.push(`${prefix}${column} = :${column}`);
@@ -186,7 +199,7 @@ export class SqlBuilder {
       projection += ', ' + aggregateSelects.join(', ');
     }
 
-    const idHole = this.idHole(input.pathParams);
+    const idHole = this.idHole(input);
     const params: SqlParams = {};
     const where: string[] = [];
 
@@ -313,7 +326,7 @@ export class SqlBuilder {
   }
 
   private requireId(input: SqlBuildInput, what: string): string {
-    const hole = this.idHole(input.pathParams);
+    const hole = this.idHole(input);
     if (hole === undefined) {
       throw new SqlBuildError(
         `${input.method.toUpperCase()} on ${input.table} needs ${what}, but the ` +

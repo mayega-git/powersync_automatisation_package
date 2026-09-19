@@ -15,7 +15,21 @@ export interface AggregateDef {
 }
 
 /** A string is a prefix (rule 1); an array is a list of paths or request definitions (rule 2). */
-export type RequestDef = { path: string; method?: string; joins?: string[]; aggregates?: AggregateDef[]; select?: string };
+export type RequestDef = {
+  path: string;
+  method?: string;
+  joins?: string[];
+  aggregates?: AggregateDef[];
+  select?: string;
+  /**
+   * Path-param name -> real column name, for a `{hole}` that filters a
+   * column other than the row's own id (e.g. a `{type}` segment that
+   * selects `item_type`). Without this, a single hole is always read as
+   * the row's id -- correct for `{id}`, wrong for a hole that names a
+   * filter value instead.
+   */
+  params?: Record<string, string>;
+};
 export type EntityRule = string | readonly (string | RequestDef)[];
 
 export type EntitiesDeclaration = Readonly<Record<string, EntityRule>>;
@@ -33,6 +47,8 @@ export interface ResolvedEntity {
   joins?: string[];
   aggregates?: AggregateDef[];
   select?: string;
+  /** See `RequestDef.params`. Only ever set under rule 2. */
+  paramColumns?: Readonly<Record<string, string>>;
 }
 
 const METHODS = new Set(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE']);
@@ -51,6 +67,7 @@ export class EntityRoutes {
     private readonly joinsByOperation: ReadonlyMap<string, string[]>,
     private readonly aggregatesByOperation: ReadonlyMap<string, AggregateDef[]>,
     private readonly selectByOperation: ReadonlyMap<string, string>,
+    private readonly paramColumnsByOperation: ReadonlyMap<string, Record<string, string>>,
   ) {}
 
   static build(declaration: EntitiesDeclaration): EntityRoutes {
@@ -59,6 +76,7 @@ export class EntityRoutes {
     const joinsByOperation = new Map<string, string[]>();
     const aggregatesByOperation = new Map<string, AggregateDef[]>();
     const selectByOperation = new Map<string, string>();
+    const paramColumnsByOperation = new Map<string, Record<string, string>>();
     const prefixes: Prefix[] = [];
     const seenPrefixes = new Map<string, string>();
 
@@ -87,7 +105,7 @@ export class EntityRoutes {
 
       for (const line of rule) {
         const parsedRequests = parseDeclaredLine(table, line);
-        for (const { method, path, joins, aggregates, select } of parsedRequests) {
+        for (const { method, path, joins, aggregates, select, params } of parsedRequests) {
           const key = `${method} ${path}`;
           const existing = tableByOperation.get(key);
           if (existing !== undefined) {
@@ -100,6 +118,7 @@ export class EntityRoutes {
           if (joins && joins.length > 0) joinsByOperation.set(key, joins);
           if (aggregates && aggregates.length > 0) aggregatesByOperation.set(key, aggregates);
           if (select) selectByOperation.set(key, select);
+          if (params && Object.keys(params).length > 0) paramColumnsByOperation.set(key, params);
           operations.push({
             operationId: key,
             method,
@@ -133,6 +152,7 @@ export class EntityRoutes {
       joinsByOperation,
       aggregatesByOperation,
       selectByOperation,
+      paramColumnsByOperation,
     );
   }
 
@@ -167,8 +187,9 @@ export class EntityRoutes {
       const joins = this.joinsByOperation.get(matched.operation.operationId);
       const aggregates = this.aggregatesByOperation.get(matched.operation.operationId);
       const select = this.selectByOperation.get(matched.operation.operationId);
+      const paramColumns = this.paramColumnsByOperation.get(matched.operation.operationId);
       if (table !== undefined) {
-        return { table, pathParams: matched.pathParams, rule: 2, joins, aggregates, select };
+        return { table, pathParams: matched.pathParams, rule: 2, joins, aggregates, select, paramColumns };
       }
     }
 
@@ -212,7 +233,7 @@ function normalizePath(table: string, raw: string): string {
   return path;
 }
 
-function parseDeclaredLine(table: string, line: unknown): Array<{ method: string; path: string; joins?: string[]; aggregates?: AggregateDef[]; select?: string }> {
+function parseDeclaredLine(table: string, line: unknown): Array<{ method: string; path: string; joins?: string[]; aggregates?: AggregateDef[]; select?: string; params?: Record<string, string> }> {
   if (typeof line === 'object' && line !== null) {
     const obj = line as RequestDef;
     if (!obj.path || !obj.path.startsWith('/')) {
@@ -223,9 +244,9 @@ function parseDeclaredLine(table: string, line: unknown): Array<{ method: string
       if (!METHODS.has(method)) {
         throw new EntityRoutesError(`"${method}" isn't a composable HTTP method.`);
       }
-      return [{ method, path: obj.path, joins: obj.joins, aggregates: obj.aggregates, select: obj.select }];
+      return [{ method, path: obj.path, joins: obj.joins, aggregates: obj.aggregates, select: obj.select, params: obj.params }];
     }
-    return ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'].map(method => ({ method, path: obj.path, joins: obj.joins, aggregates: obj.aggregates, select: obj.select }));
+    return ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'].map(method => ({ method, path: obj.path, joins: obj.joins, aggregates: obj.aggregates, select: obj.select, params: obj.params }));
   }
 
   if (typeof line !== 'string') {

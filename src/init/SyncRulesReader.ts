@@ -8,9 +8,17 @@ const TYPE_REAL = 8;
 
 /** A replicated table, as a data query designates it. */
 export interface CitedTable {
-  /** Database-side name. */
+  /**
+   * Database-side name, ALWAYS qualified as "schema.table" -- defaulting to
+   * "public" (Postgres's own default) when the query names no schema. Two
+   * different Postgres schemas routinely declare a table of the same bare
+   * name (e.g. `stock.stock_balance` and `material_stock.stock_balance`,
+   * finished goods vs. raw materials) -- an unqualified `source` would merge
+   * them into one, wrong, table. Always qualifying, even for the common
+   * unqualified case, keeps exactly one code path instead of two.
+   */
   source: string;
-  /** Device-side name: the alias when there is one, otherwise the same. */
+  /** Device-side name: the alias when there is one, otherwise the bare table name (never qualified). */
   local: string;
   /** Enumerated columns. Absent on a `SELECT *`. */
   columns?: string[];
@@ -23,7 +31,13 @@ export interface ReadBucket {
   tables: CitedTable[];
 }
 
-/** The database's real structure, keyed by table name. Expands the `SELECT *` queries. */
+/**
+ * The database's real structure, keyed "schema.table" -- ALWAYS qualified,
+ * matching `CitedTable.source`. The admin API groups tables by schema
+ * (`schemas[].name`) but each table's own `name` is bare; keying by the bare
+ * name alone would merge, say, `stock.stock_balance` and
+ * `material_stock.stock_balance` into one entry. Expands `SELECT *` queries.
+ */
 export function readStructure(connections: unknown): Map<string, ReplicatedColumn[]> {
   const byTable = new Map<string, ReplicatedColumn[]>();
   if (!Array.isArray(connections)) return byTable;
@@ -33,6 +47,8 @@ export function readStructure(connections: unknown): Map<string, ReplicatedColum
     if (!Array.isArray(schemas)) continue;
 
     for (const schema of schemas) {
+      const schemaName = (schema as { name?: unknown })?.name;
+      const schemaPrefix = typeof schemaName === 'string' && schemaName.length > 0 ? schemaName : 'public';
       const tables = (schema as { tables?: unknown })?.tables;
       if (!Array.isArray(tables)) continue;
 
@@ -42,7 +58,7 @@ export function readStructure(connections: unknown): Map<string, ReplicatedColum
         if (typeof name !== 'string' || !Array.isArray(columns)) continue;
 
         byTable.set(
-          name,
+          `${schemaPrefix}.${name}`,
           columns
             .map((c) => toColumn(c))
             .filter((c): c is ReplicatedColumn => c !== undefined),
@@ -118,8 +134,8 @@ export function readQuery(sql: string): CitedTable | undefined {
 
   const alias = words[1]?.toLowerCase() === 'as' ? words[2] : words[1];
 
-  const source = identifier(table);
-  const local = alias !== undefined ? identifier(alias) : source;
+  const source = qualifiedIdentifier(table);
+  const local = alias !== undefined ? identifier(alias) : identifier(table);
 
   if (selectList === '*') return { source, local };
 
@@ -155,4 +171,17 @@ function readSelectList(list: string): string[] | undefined {
 function identifier(raw: string): string {
   const last = raw.split('.').pop() ?? raw;
   return last.replace(/^["`\[]|["`\]]$/g, '');
+}
+
+/**
+ * `material_stock.stock_balance` stays `material_stock.stock_balance`;
+ * `tag_entity` (no schema named) becomes `public.tag_entity` -- Postgres's
+ * own default, and what `readStructure` also falls back to, so the two
+ * always agree on a key.
+ */
+function qualifiedIdentifier(raw: string): string {
+  const parts = raw.split('.').map((p) => p.replace(/^["`\[]|["`\]]$/g, ''));
+  const table = parts[parts.length - 1]!;
+  const schema = parts.length > 1 ? parts[parts.length - 2]! : 'public';
+  return `${schema}.${table}`;
 }

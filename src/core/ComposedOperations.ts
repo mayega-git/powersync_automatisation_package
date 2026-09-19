@@ -69,6 +69,7 @@ export class ComposedOperations {
       table: resolved.table,
       method: req.method,
       pathParams: resolved.pathParams,
+      paramColumns: resolved.paramColumns,
       joins: resolved.joins,
       aggregates: resolved.aggregates,
       select: resolved.select,
@@ -91,7 +92,12 @@ export class ComposedOperations {
       }
     }
 
-    const single = Object.keys(resolved.pathParams).length > 0;
+    // A hole mapped by `paramColumns` filters a column, it doesn't designate a
+    // single row (see SqlBuilder.idHole) -- only an unmapped hole does.
+    const idParams = Object.keys(resolved.pathParams).filter(
+      (k) => resolved.paramColumns?.[k] === undefined,
+    );
+    const single = idParams.length > 0;
     return {
       status: 'Success',
       entity: single ? (rows[0] ?? null) : rows,
@@ -114,6 +120,7 @@ export class ComposedOperations {
         table: resolved.table,
         method: req.method,
         pathParams: resolved.pathParams,
+        paramColumns: resolved.paramColumns,
         joins: resolved.joins,
         ...(req.body !== undefined ? { body: req.body } : {}),
         metadata: requestId,

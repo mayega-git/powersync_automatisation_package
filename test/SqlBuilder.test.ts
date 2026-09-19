@@ -118,6 +118,58 @@ describe('SqlBuilder: reads', () => {
   });
 });
 
+describe('SqlBuilder: a hole mapped to a filter column, not the row id', () => {
+  const configSchema: TableColumns = {
+    configuration_item: ['item_type', 'payload', 'tenant_id', 'created_at', 'updated_at'],
+  };
+  const c = new SqlBuilder(configSchema);
+
+  it('filters the mapped column instead of reading it as id', () => {
+    const [statement] = c.build({
+      table: 'configuration_item',
+      method: 'GET',
+      pathParams: { type: 'product-profile' },
+      paramColumns: { type: 'item_type' },
+    });
+    expect(statement!.sql).toContain('WHERE item_type = :item_type');
+    expect(statement!.sql).not.toContain('id = :id');
+    expect(statement!.params).toEqual({ item_type: 'product-profile' });
+  });
+
+  it('an unmapped single hole still designates the row (no regression)', () => {
+    const [statement] = c.build({
+      table: 'configuration_item',
+      method: 'GET',
+      pathParams: { id: 'row-1' },
+    });
+    expect(statement!.sql).toContain('WHERE id = :id');
+  });
+
+  it('with a mapped hole and an id hole together, both filter correctly', () => {
+    const [statement] = c.build({
+      table: 'configuration_item',
+      method: 'GET',
+      pathParams: { type: 'product-profile', id: 'row-1' },
+      paramColumns: { type: 'item_type' },
+    });
+    expect(statement!.sql).toContain('WHERE id = :id AND item_type = :item_type');
+    expect(statement!.params).toEqual({ id: 'row-1', item_type: 'product-profile' });
+  });
+
+  it('an insert writes the mapped column from the path, not just filters by it', () => {
+    const [statement] = c.build({
+      table: 'configuration_item',
+      method: 'POST',
+      pathParams: { type: 'product-profile' },
+      paramColumns: { type: 'item_type' },
+      body: { payload: '{}' },
+      ...options,
+    });
+    expect(statement!.sql).toContain('item_type');
+    expect(statement!.params['item_type']).toBe('product-profile');
+  });
+});
+
 describe('SqlBuilder: inserts', () => {
   it('writes the body columns, after conversion to snake_case', () => {
     const [statement] = b.build({
