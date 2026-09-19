@@ -228,8 +228,29 @@ import { ApplicationTokens } from './tokens';
 
 const DATABASE_FILE = 'offline-sync.db';
 
-/** Called ONCE, at startup. This is exactly what the app's React provider imports. */
-export async function initSync(): Promise<OfflineSync> {
+// initSync() is meant to run once, but the React provider's effect isn't
+// guaranteed to call it only once: React Strict Mode (on by default in
+// development) mounts every component, cleans it up, then mounts it again --
+// and the cleanup can't undo an initSync() still in flight, since its own
+// bridge-disconnect only gets wired up AFTER initSync() resolves. Two full
+// calls would build two independent PowerSyncDatabase engines, both staying
+// connected, both racing to answer the Service Worker. Caching the promise
+// here makes a second call return the SAME engine instead of building
+// another one; on failure the cache is cleared so a real retry (not a React
+// remount) can still try again.
+let syncPromise: Promise<OfflineSync> | null = null;
+
+/** Called from the app's React provider. Safe to call more than once -- see above. */
+export function initSync(): Promise<OfflineSync> {
+  if (syncPromise !== null) return syncPromise;
+  syncPromise = buildSync().catch((err: unknown) => {
+    syncPromise = null;
+    throw err;
+  });
+  return syncPromise;
+}
+
+async function buildSync(): Promise<OfflineSync> {
   const engineUrl = process.env.NEXT_PUBLIC_POWERSYNC_URL;
   if (engineUrl === undefined || engineUrl.length === 0) {
     throw new Error(

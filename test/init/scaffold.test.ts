@@ -253,6 +253,6 @@ describe('the wiring', () => {
   it('exports initSync, the name the React provider imports', () => {
     const cwd = project();
     run(cwd);
-    expect(read(cwd, INIT_FILE)).toContain('export async function initSync()');
+    expect(read(cwd, INIT_FILE)).toContain('export function initSync()');
   });
 });
