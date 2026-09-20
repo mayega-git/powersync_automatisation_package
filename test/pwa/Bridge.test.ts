@@ -67,7 +67,7 @@ describe('the bridge, Service Worker side', () => {
     };
 
     expect(network).not.toHaveBeenCalled();
-    expect(JSON.parse(response.body)).toEqual([{ id: 't-1' }]);
+    expect(JSON.parse(response.body)).toEqual({ ok: true, source: 'local', data: [{ id: 't-1' }] });
     expect(response.headers['X-Offline-Sync']).toBe('local-database');
   });
 
@@ -133,7 +133,7 @@ describe('the bridge, Service Worker side', () => {
 
     const response = (await respond({ raw: {}, clientId: '', request: req })) as { body: string };
     expect(get).not.toHaveBeenCalled();
-    expect(JSON.parse(response.body)).toBe('ok');
+    expect(JSON.parse(response.body)).toEqual({ ok: true, source: 'local', data: 'ok' });
   });
 });
 

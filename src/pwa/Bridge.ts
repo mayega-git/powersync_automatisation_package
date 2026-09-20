@@ -105,7 +105,7 @@ export function serveFromPage(options: WorkerSideOptions) {
     const body = {
       ok: response.status === 'Success' || response.status === undefined,
       source: 'local',
-      payload: response.entity ? formatPayload(response.entity) : null,
+      data: response.entity ? formatPayload(response.entity) : null,
     };
 
     return options.buildResponse(JSON.stringify(body), {
