@@ -399,13 +399,11 @@ a pas de table à désigner. Une vraie correction demanderait d'écrire ce
 calcul en SQLite pur, travail propre à cette application (elle seule
 connaît la vraie forme d'une nomenclature et d'un solde de stock).
 
-**Le plantage JavaScript qui suit** (`Cannot read properties of null
-(reading 'length')`) n'a pas pu être localisé avec certitude — la pile
-d'appel est minifiée. Il ressemble fortement, dans la même zone de la
-page (affectation de ressources), à un bug déjà repéré et volontairement
-laissé de côté : `providers/ProductionDataProvider.tsx`,
-`listProductionResources(agencyId)` qui peut retourner `null` au lieu de
-`[]`. Sans confirmation certaine, à vérifier avant de le corriger.
+**Correction (20/09/2026)** : le plantage JavaScript observé juste après
+(`Cannot read properties of null (reading 'length')`, suivi de « This
+page couldn't load ») n'est PAS lié à la capacité de production — pile
+d'appel élucidée depuis, voir le point 17 ci-dessous. Il vient d'un
+click séparé, sur l'onglet « Ressources affectées ».
 
 ---
 
@@ -473,12 +471,103 @@ local-database` avec de vraies données. Même vérification sur
 
 ---
 
+## 17. Une déclaration en règle 1 avale un chemin qui n'a rien à voir avec elle
+
+**Ce qu'on voyait** (trouvé le 20/09/2026, onglet « Ressources
+affectées », manufacturing) : `Cannot read properties of null (reading
+'length')`, puis toute la page tombe (« This page couldn't load »).
+
+**Le mécanisme** : `production_order` est déclarée en règle 1, un
+simple préfixe : `/api/kernel/manufacturing/production-orders`. La
+règle 1, sans rien préciser de plus, DEVINE le sens de ce qui suit le
+préfixe en comptant les segments restants : zéro segment → toute la
+liste, un segment → un identifiant de ligne, deux ou plus → le module
+ne sait pas répondre et laisse passer au réseau
+(`EntityRoutes.ts::resolve`). `manufacturing/production-orders/resources`
+laisse exactement UN segment (`resources`) — le module le prend pour un
+identifiant, construit `SELECT * FROM production_order WHERE id =
+'resources'`, ne trouve rien, répond `null` en croyant avoir bien
+répondu. Le composant qui affiche cette liste
+(`app/manufacturing/page.tsx`, `ResourceSection`, ligne 395) ne vérifie
+pas que la réponse n'est pas `null` avant de lire `.length`.
+
+**Point important** : ce n'est pas une route non déclarée qui échoue
+proprement au réseau (comme le point 15) — c'est une route non
+apparentée, mal capturée par une déclaration qui ne la concerne pas,
+qui répond `null` avec l'air d'avoir réussi. Ça se produit aussi bien en
+ligne que hors ligne, dès que le Service Worker contrôle la page.
+
+**Pas corrigé, mais la correction est identifiée** et ne demande aucun
+changement du module : déclarer `production_order` en règle 2, chemins
+explicites (comme `configuration_item`), qui ne devine jamais :
+```yaml
+production_order:
+  - /api/kernel/manufacturing/production-orders
+  - /api/kernel/manufacturing/production-orders/{id}
+```
+`/resources`, `/capacity`, `/capacity/all`, `/{id}/steps` ne
+correspondraient alors plus à rien, et partiraient correctement au
+réseau — même traitement que le point 15, pas un plantage silencieux.
+
+**Où** : `offline-sync.entities.yaml`, production-core-main — une
+déclaration à corriger, pas un défaut du module.
+
+### Idée de correctif de fond, proposée le 20/09/2026
+
+Plutôt que corriger déclaration par déclaration, l'idée avancée est de
+rendre la règle 1 elle-même plus sûre : ajouter dans le YAML un moyen
+de dire explicitement, pour un segment de chemin, s'il s'agit d'un
+IDENTIFIANT de ligne ou d'une VALEUR DE COLONNE — au lieu de le deviner
+en comptant les segments restants. Une partie existe déjà (`params`, en
+règle 2, voir point 12) ; ce qui manque, c'est le même genre de
+précision pour la règle 1, et un mot explicite pour dire « ceci est un
+identifiant » plutôt que de le déduire par défaut. Retenu comme piste
+d'amélioration du module, pas encore implémenté.
+
+## 18. Le stock matières hors ligne ne couvre que la lecture, pas encore l'écriture
+
+**Ce qu'on voyait** : dans « Opérations matières », réception
+fournisseur et sortie échouent hors ligne
+(`POST material-stock/receipts`, `net::ERR_INTERNET_DISCONNECTED`) — à
+la différence de Fabrication, où créer un ordre de fabrication hors
+ligne fonctionne déjà.
+
+**Pourquoi Fabrication marche et pas ça** : `production_order` (règle
+1, voir point 17) couvre TOUTES les méthodes HTTP sur son préfixe, pas
+seulement la lecture — créer un ordre de fabrication, c'est un `POST`
+sur ce même préfixe, donc déjà pris en charge. `material-stock/receipts`
+et `material-stock/issues` ne sont, eux, déclarés nulle part.
+
+**Ce qui rend ça moins simple qu'ajouter une ligne dans `entities.yaml`
+(contrairement au point 14)** : le corps envoyé par le formulaire de
+réception (`ReceiveInput` : `productId`, `quantity`, `unitCost`,
+`currency`, `supplierThirdPartyId`, `referenceNumber`) ne contient PAS
+de `movementType` — c'est le vrai serveur qui déduit « RECEIPT » du
+chemin `/receipts` appelé, « ISSUE » du chemin `/issues`. Vérifié dans
+le module (`SqlBuilder.ts::buildInsert`) : l'écriture locale ne prend
+que les colonnes présentes dans le corps de la requête ; sans
+`movementType` dans le corps, la colonne `movement_type` serait
+simplement omise de l'écriture locale (donc `NULL`, aucune erreur SQL,
+**ça ne plante pas**) — la ligne locale, temporaire, serait juste
+affichée sans son type jusqu'au prochain passage réseau réussi, qui
+remplace cette ligne optimiste par la vraie (l'écriture QUEUED envoie
+la requête d'origine complète au vrai serveur, pas la ligne locale
+approximative — la donnée durable reste correcte, seul l'affichage
+intermédiaire serait incomplet).
+
+**Pas corrigé.** Deux façons de le faire, pas encore choisies : ajouter
+`movementType` explicitement dans le corps envoyé par le frontend pour
+ces deux appels, ou écrire un vrai gestionnaire personnalisé plutôt
+qu'une déclaration automatique.
+
+---
+
 ## Ce qui a été trouvé mais volontairement laissé de côté
 
-- **`ProductionDataProvider.tsx`** : `listProductionResources()` peut
-  renvoyer `null`, un appelant fait `.map()`/`.length` dessus sans
-  vérifier — un vrai bug, mais un défaut de contrat entre deux parties
-  de l'application, sans rapport avec `@ksm/offline-sync`.
+- **`ProductionDataProvider.tsx`** : `listProductionResources(agencyId)`
+  peut aussi renvoyer `null` ailleurs, un appelant fait `.map()` dessus
+  sans vérifier — même famille de bug que le point 17, mais dans un
+  autre fichier, sans rapport avec `@ksm/offline-sync`.
 - **500 sur `product-core/sellable-products`** : bug du serveur
   `product-core`, sans rapport avec la synchronisation hors ligne.
 
@@ -503,8 +592,10 @@ local-database` avec de vraies données. Même vérification sur
 | 14 | `material-stock/movements` non déclarée | Frontend (`entities.yaml`) seul | **Non portable, par nature** — même raison qu'au point 2. |
 | 15 | Capacité de production (calcul, pas table) | Ni l'un ni l'autre (pas corrigé) | Si corrigé un jour : gestionnaire personnalisé écrit côté application, en s'appuyant sur un mécanisme du module déjà prévu pour ça (l'« operation map »). Le calcul lui-même resterait propre à cette application. |
 | 16 | Le pont attend une connexion réseau pour se brancher | Frontend (`init.ts`, patch à la main) + Module (gabarit) | **Déjà fait**, même remarque qu'aux points 8 et 9. C'est ce correctif-là qui a résolu le symptôme initial (pages vides hors ligne). |
+| 17 | `production_order` en règle 1 avale `/resources` | Frontend (`entities.yaml`, pas encore corrigé) | **Non portable au sens strict** (une déclaration reste propre à l'application), mais **la cause est un manque du module** : une déclaration mieux outillée (voir « idée de correctif de fond ») rendrait ce genre d'erreur impossible à écrire, pas seulement facile à corriger une fois trouvée. |
+| 18 | Écriture hors ligne pour réception/sortie de stock matières | Ni l'un ni l'autre (pas corrigé) | Pas encore tranché : soit le frontend envoie `movementType` explicitement, soit un gestionnaire personnalisé est écrit — dans les deux cas, une décision d'application, le mécanisme du module (écriture composée, file d'attente) est déjà prêt à l'accueillir. |
 
-**Constat général** : sur 16 corrections, 2 seulement (points 6-7, 10-11
+**Constat général** : sur 18 corrections, 2 seulement (points 6-7, 10-11
 comptés une fois chacun comme « infrastructure ») ne concernaient ni le
 module ni l'application — un problème de configuration serveur, en
 dehors du périmètre de ce module par nature. Sur les corrections
@@ -564,3 +655,14 @@ des données propres à l'application, pas des défauts du module.
   exactement le genre d'inversion qu'une relecture de conception, ou un
   test qui coupe vraiment le réseau dès le départ, aurait dû repérer
   avant la mise en situation réelle.
+- Le point 17 pointe la même famille de faiblesse que le point 16, côté
+  déclaration cette fois : la règle 1 devine le sens d'un segment de
+  chemin en comptant ce qu'il en reste, sans savoir si ce qu'elle avale
+  a vraiment un rapport avec la table déclarée. Ça a fonctionné pour
+  toutes les tables déclarées ainsi jusqu'ici — jusqu'à ce que
+  `production_order` ait de vraies sous-routes (`/resources`,
+  `/capacity`) qui ne sont pas des identifiants de ligne. L'idée
+  proposée en réponse (nommer explicitement identifiant/valeur de
+  colonne plutôt que deviner) irait chercher ce genre de bug avant
+  qu'une vraie application ne le révèle, comme le point 16 aurait dû
+  l'être.
