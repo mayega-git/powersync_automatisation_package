@@ -143,6 +143,35 @@ describe('rule 2: a hole that filters a column, not the row id', () => {
   });
 });
 
+describe('rule 2: a fixed column value the request body never carries', () => {
+  // material_stock_stock_movement's receipts/issues paths never carry
+  // movementType in their body -- the real server derives it from which
+  // endpoint was called. Two different paths, same table, two different
+  // fixed meanings for the same column.
+  const r = EntityRoutes.build({
+    material_stock_stock_movement: [
+      { path: '/api/kernel/material-stock/receipts', method: 'POST', defaults: { movement_type: 'RECEIPT' } },
+      { path: '/api/kernel/material-stock/issues', method: 'POST', defaults: { movement_type: 'ISSUE' } },
+      '/api/kernel/material-stock/movements',
+    ],
+  });
+
+  it('carries the fixed value through to the resolved entity', () => {
+    const resolved = r.resolve('POST', '/api/kernel/material-stock/receipts');
+    expect(resolved?.columnDefaults).toEqual({ movement_type: 'RECEIPT' });
+  });
+
+  it('a different path under the same table carries a different fixed value', () => {
+    const resolved = r.resolve('POST', '/api/kernel/material-stock/issues');
+    expect(resolved?.columnDefaults).toEqual({ movement_type: 'ISSUE' });
+  });
+
+  it('a route with no defaults declared carries none', () => {
+    const resolved = r.resolve('POST', '/api/kernel/material-stock/movements');
+    expect(resolved?.columnDefaults).toBeUndefined();
+  });
+});
+
 describe('what the declaration refuses', () => {
   it('refuses two tables on the same prefix', () => {
     expect(() =>

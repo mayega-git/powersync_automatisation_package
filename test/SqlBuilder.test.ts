@@ -258,6 +258,43 @@ describe('SqlBuilder: inserts', () => {
     });
     expect(statement!.sql).not.toContain('_metadata');
   });
+
+  it('writes a declared default for a column the body never carries', () => {
+    const [statement] = b.build({
+      table: 'tag_entity',
+      method: 'POST',
+      pathParams: {},
+      body: { name: 'Algebra' },
+      columnDefaults: { category_id: 'math' },
+      ...options,
+    });
+    expect(statement!.sql).toContain('category_id');
+    expect(statement!.params['category_id']).toBe('math');
+  });
+
+  it('lets a body value for the same column win over the default', () => {
+    const [statement] = b.build({
+      table: 'tag_entity',
+      method: 'POST',
+      pathParams: {},
+      body: { name: 'Algebra', categoryId: 'from-body' },
+      columnDefaults: { category_id: 'from-default' },
+      ...options,
+    });
+    expect(statement!.params['category_id']).toBe('from-body');
+  });
+
+  it('ignores a default naming a column the table does not have', () => {
+    const [statement] = b.build({
+      table: 'tag_entity',
+      method: 'POST',
+      pathParams: {},
+      body: { name: 'Algebra' },
+      columnDefaults: { not_a_real_column: 'x' },
+      ...options,
+    });
+    expect(statement!.sql).not.toContain('not_a_real_column');
+  });
 });
 
 describe('SqlBuilder: updates', () => {

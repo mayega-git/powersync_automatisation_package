@@ -29,6 +29,17 @@ export type RequestDef = {
    * filter value instead.
    */
   params?: Record<string, string>;
+  /**
+   * Real column name -> fixed value, written on every local insert made
+   * through THIS path, regardless of what the request body contains. For
+   * a column the request body never carries because the real server
+   * derives it from which endpoint was called (e.g. POST .../receipts
+   * always means movement_type = 'RECEIPT', POST .../issues always means
+   * 'ISSUE' -- same table, same shape, two different fixed meanings).
+   * Without this, that column is simply left out of the local insert
+   * (NULL), even though its value was never actually ambiguous.
+   */
+  defaults?: Record<string, string>;
 };
 export type EntityRule = string | readonly (string | RequestDef)[];
 
@@ -49,6 +60,8 @@ export interface ResolvedEntity {
   select?: string;
   /** See `RequestDef.params`. Only ever set under rule 2. */
   paramColumns?: Readonly<Record<string, string>>;
+  /** See `RequestDef.defaults`. Only ever set under rule 2. */
+  columnDefaults?: Readonly<Record<string, string>>;
 }
 
 const METHODS = new Set(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE']);
@@ -68,6 +81,7 @@ export class EntityRoutes {
     private readonly aggregatesByOperation: ReadonlyMap<string, AggregateDef[]>,
     private readonly selectByOperation: ReadonlyMap<string, string>,
     private readonly paramColumnsByOperation: ReadonlyMap<string, Record<string, string>>,
+    private readonly columnDefaultsByOperation: ReadonlyMap<string, Record<string, string>>,
   ) {}
 
   static build(declaration: EntitiesDeclaration): EntityRoutes {
@@ -77,6 +91,7 @@ export class EntityRoutes {
     const aggregatesByOperation = new Map<string, AggregateDef[]>();
     const selectByOperation = new Map<string, string>();
     const paramColumnsByOperation = new Map<string, Record<string, string>>();
+    const columnDefaultsByOperation = new Map<string, Record<string, string>>();
     const prefixes: Prefix[] = [];
     const seenPrefixes = new Map<string, string>();
 
@@ -105,7 +120,7 @@ export class EntityRoutes {
 
       for (const line of rule) {
         const parsedRequests = parseDeclaredLine(table, line);
-        for (const { method, path, joins, aggregates, select, params } of parsedRequests) {
+        for (const { method, path, joins, aggregates, select, params, defaults } of parsedRequests) {
           const key = `${method} ${path}`;
           const existing = tableByOperation.get(key);
           if (existing !== undefined) {
@@ -119,6 +134,7 @@ export class EntityRoutes {
           if (aggregates && aggregates.length > 0) aggregatesByOperation.set(key, aggregates);
           if (select) selectByOperation.set(key, select);
           if (params && Object.keys(params).length > 0) paramColumnsByOperation.set(key, params);
+          if (defaults && Object.keys(defaults).length > 0) columnDefaultsByOperation.set(key, defaults);
           operations.push({
             operationId: key,
             method,
@@ -153,6 +169,7 @@ export class EntityRoutes {
       aggregatesByOperation,
       selectByOperation,
       paramColumnsByOperation,
+      columnDefaultsByOperation,
     );
   }
 
@@ -188,8 +205,9 @@ export class EntityRoutes {
       const aggregates = this.aggregatesByOperation.get(matched.operation.operationId);
       const select = this.selectByOperation.get(matched.operation.operationId);
       const paramColumns = this.paramColumnsByOperation.get(matched.operation.operationId);
+      const columnDefaults = this.columnDefaultsByOperation.get(matched.operation.operationId);
       if (table !== undefined) {
-        return { table, pathParams: matched.pathParams, rule: 2, joins, aggregates, select, paramColumns };
+        return { table, pathParams: matched.pathParams, rule: 2, joins, aggregates, select, paramColumns, columnDefaults };
       }
     }
 
@@ -233,7 +251,7 @@ function normalizePath(table: string, raw: string): string {
   return path;
 }
 
-function parseDeclaredLine(table: string, line: unknown): Array<{ method: string; path: string; joins?: string[]; aggregates?: AggregateDef[]; select?: string; params?: Record<string, string> }> {
+function parseDeclaredLine(table: string, line: unknown): Array<{ method: string; path: string; joins?: string[]; aggregates?: AggregateDef[]; select?: string; params?: Record<string, string>; defaults?: Record<string, string> }> {
   if (typeof line === 'object' && line !== null) {
     const obj = line as RequestDef;
     if (!obj.path || !obj.path.startsWith('/')) {
@@ -244,9 +262,9 @@ function parseDeclaredLine(table: string, line: unknown): Array<{ method: string
       if (!METHODS.has(method)) {
         throw new EntityRoutesError(`"${method}" isn't a composable HTTP method.`);
       }
-      return [{ method, path: obj.path, joins: obj.joins, aggregates: obj.aggregates, select: obj.select, params: obj.params }];
+      return [{ method, path: obj.path, joins: obj.joins, aggregates: obj.aggregates, select: obj.select, params: obj.params, defaults: obj.defaults }];
     }
-    return ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'].map(method => ({ method, path: obj.path, joins: obj.joins, aggregates: obj.aggregates, select: obj.select, params: obj.params }));
+    return ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'].map(method => ({ method, path: obj.path, joins: obj.joins, aggregates: obj.aggregates, select: obj.select, params: obj.params, defaults: obj.defaults }));
   }
 
   if (typeof line !== 'string') {

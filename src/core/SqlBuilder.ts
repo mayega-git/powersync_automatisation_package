@@ -43,6 +43,15 @@ export interface SqlBuildInput {
    * last hole (or the one literally named `id`) identifies the row.
    */
   paramColumns?: Readonly<Record<string, string>>;
+  /**
+   * Real column name -> fixed value, written on every insert regardless of
+   * the request body (e.g. movement_type = 'RECEIPT' for a path the body
+   * never carries that column on, because the real server derives it from
+   * which endpoint was called, not from anything the client sends).
+   * Ignored outside of an insert; a value already present in the body for
+   * the same column always wins.
+   */
+  columnDefaults?: Readonly<Record<string, string>>;
   body?: unknown;
   /** Stored in `_metadata`. */
   metadata?: string;
@@ -247,6 +256,17 @@ export class SqlBuilder {
       if (names.includes(column) || RESERVED_COLUMNS.has(column)) continue;
       names.push(column);
       params[column] = value;
+    }
+
+    // A body value for the same column already won above; a default only
+    // fills what the body and the path never named.
+    if (input.columnDefaults) {
+      for (const [column, value] of Object.entries(input.columnDefaults)) {
+        if (names.includes(column) || RESERVED_COLUMNS.has(column)) continue;
+        if (!columns.includes(column)) continue;
+        names.push(column);
+        params[column] = value;
+      }
     }
 
     if (columns.includes('tenant_id')) {

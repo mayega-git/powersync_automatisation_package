@@ -129,6 +129,12 @@ function loadEntitiesFrom(path: string): EntitiesDeclaration {
                     Object.entries(obj['params'] as Record<string, unknown>).map(([k, v]) => [k, String(v)]),
                   )
                 : undefined,
+            defaults:
+              typeof obj['defaults'] === 'object' && obj['defaults'] !== null
+                ? Object.fromEntries(
+                    Object.entries(obj['defaults'] as Record<string, unknown>).map(([k, v]) => [k, String(v)]),
+                  )
+                : undefined,
           };
         }
         throw new EntitiesError(`Invalid rule format for ${table}`);

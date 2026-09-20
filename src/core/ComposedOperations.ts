@@ -121,6 +121,7 @@ export class ComposedOperations {
         method: req.method,
         pathParams: resolved.pathParams,
         paramColumns: resolved.paramColumns,
+        columnDefaults: resolved.columnDefaults,
         joins: resolved.joins,
         ...(req.body !== undefined ? { body: req.body } : {}),
         metadata: requestId,
