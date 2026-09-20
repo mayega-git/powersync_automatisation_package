@@ -497,20 +497,24 @@ apparentée, mal capturée par une déclaration qui ne la concerne pas,
 qui répond `null` avec l'air d'avoir réussi. Ça se produit aussi bien en
 ligne que hors ligne, dès que le Service Worker contrôle la page.
 
-**Pas corrigé, mais la correction est identifiée** et ne demande aucun
-changement du module : déclarer `production_order` en règle 2, chemins
-explicites (comme `configuration_item`), qui ne devine jamais :
+**Corrigé le 20/09/2026**, sans changement du module : `production_order`
+déclarée en règle 2, chemin explicite, qui ne devine jamais :
 ```yaml
 production_order:
   - /api/kernel/manufacturing/production-orders
-  - /api/kernel/manufacturing/production-orders/{id}
 ```
-`/resources`, `/capacity`, `/capacity/all`, `/{id}/steps` ne
-correspondraient alors plus à rien, et partiraient correctement au
-réseau — même traitement que le point 15, pas un plantage silencieux.
+Aucun `{id}` ajouté : vérifié contre `lib/api/manufacturing.ts`, rien ne
+fait de GET/PUT/DELETE direct sur `production-orders/{id}` — toutes les
+mutations passent par une sous-route (`/release`, `/complete`,
+`/cancel`) ou une ressource imbriquée (`/steps`), jamais par l'id seul.
+L'ancienne règle 1 n'avait donc, pour ce cas précis, aucun usage
+légitime à couvrir. `/resources`, `/capacity`, `/capacity/all`,
+`/production-mix`, `/feasibility`, `/{id}/steps` tombent maintenant
+tous correctement au réseau — vérifié en direct : plus aucune de ces
+requêtes ne porte l'en-tête `X-Offline-Sync`, là où `/resources`
+répondait auparavant `null` en local.
 
-**Où** : `offline-sync.entities.yaml`, production-core-main — une
-déclaration à corriger, pas un défaut du module.
+**Où** : `offline-sync.entities.yaml`, production-core-main.
 
 ### Idée de correctif de fond, proposée le 20/09/2026
 
@@ -606,7 +610,7 @@ automatique. Les trois ne s'excluent pas.
 | 14 | `material-stock/movements` non déclarée | Frontend (`entities.yaml`) seul | **Non portable, par nature** — même raison qu'au point 2. |
 | 15 | Capacité de production (calcul, pas table) | Ni l'un ni l'autre (pas corrigé) | Si corrigé un jour : gestionnaire personnalisé écrit côté application, en s'appuyant sur un mécanisme du module déjà prévu pour ça (l'« operation map »). Le calcul lui-même resterait propre à cette application. |
 | 16 | Le pont attend une connexion réseau pour se brancher | Frontend (`init.ts`, patch à la main) + Module (gabarit) | **Déjà fait**, même remarque qu'aux points 8 et 9. C'est ce correctif-là qui a résolu le symptôme initial (pages vides hors ligne). |
-| 17 | `production_order` en règle 1 avale `/resources` | Frontend (`entities.yaml`, pas encore corrigé) | **Non portable au sens strict** (une déclaration reste propre à l'application), mais **la cause est un manque du module** : une déclaration mieux outillée (voir « idée de correctif de fond ») rendrait ce genre d'erreur impossible à écrire, pas seulement facile à corriger une fois trouvée. |
+| 17 | `production_order` en règle 1 avale `/resources` | Frontend (`entities.yaml`) | **Corrigé côté frontend, mais non portable au sens strict** (une déclaration reste propre à l'application) — **la cause reste un manque du module** : une déclaration mieux outillée (voir « idée de correctif de fond ») rendrait ce genre d'erreur impossible à écrire, pas seulement facile à corriger une fois trouvée. |
 | 18 | Écriture hors ligne pour réception/sortie de stock matières | Ni l'un ni l'autre (pas corrigé) | Pas encore tranché : soit le frontend envoie `movementType` explicitement, soit un gestionnaire personnalisé est écrit — dans les deux cas, une décision d'application, le mécanisme du module (écriture composée, file d'attente) est déjà prêt à l'accueillir. |
 
 **Constat général** : sur 18 corrections, 2 seulement (points 6-7, 10-11
