@@ -547,18 +547,32 @@ chemin `/receipts` appelé, « ISSUE » du chemin `/issues`. Vérifié dans
 le module (`SqlBuilder.ts::buildInsert`) : l'écriture locale ne prend
 que les colonnes présentes dans le corps de la requête ; sans
 `movementType` dans le corps, la colonne `movement_type` serait
-simplement omise de l'écriture locale (donc `NULL`, aucune erreur SQL,
-**ça ne plante pas**) — la ligne locale, temporaire, serait juste
-affichée sans son type jusqu'au prochain passage réseau réussi, qui
-remplace cette ligne optimiste par la vraie (l'écriture QUEUED envoie
-la requête d'origine complète au vrai serveur, pas la ligne locale
-approximative — la donnée durable reste correcte, seul l'affichage
-intermédiaire serait incomplet).
+simplement omise de l'écriture locale — `NULL`, aucune erreur SQL côté
+module.
 
-**Pas corrigé.** Deux façons de le faire, pas encore choisies : ajouter
+**Correction (20/09/2026)** : ce `NULL` n'est pas juste un affichage
+incomplet, sans conséquence — il fait planter un endroit précis du
+frontend. `app/circularity/page.tsx`, ligne 42 :
+```ts
+setScraps(unique.filter((movement) => movement.movementType.toUpperCase() === "SCRAP"))
+```
+La ligne locale sans type reviendrait avec `movementType: null` à la
+prochaine lecture de `/movements` (la table est la même). Appeler
+`.toUpperCase()` sur `null` lève une exception — à l'intérieur d'un
+`.filter()` qui parcourt TOUTES les lignes : une seule ligne sans type
+suffit à faire échouer tout le calcul, pas seulement l'affichage de
+cette ligne. Le `catch` générique de la page attraperait ça et
+afficherait « Erreur de connexion. » — trompeur, mais un vrai plantage,
+pas un simple manque visuel. Ce n'est pas une limite du module : c'est
+ce code frontend précis qui suppose `movementType` toujours rempli, et
+qui ne se protège pas contre son absence.
+
+**Pas corrigé.** Trois façons de le faire, pas encore choisies : ajouter
 `movementType` explicitement dans le corps envoyé par le frontend pour
-ces deux appels, ou écrire un vrai gestionnaire personnalisé plutôt
-qu'une déclaration automatique.
+ces deux appels, protéger `circularity/page.tsx` (et tout autre endroit
+qui suppose `movementType` non vide) contre une valeur absente, ou
+écrire un vrai gestionnaire personnalisé plutôt qu'une déclaration
+automatique. Les trois ne s'excluent pas.
 
 ---
 
