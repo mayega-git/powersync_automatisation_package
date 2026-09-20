@@ -326,9 +326,17 @@ async function buildSync(): Promise<OfflineSync> {
     logger,
   });
 
-  // The channel opens LAST: any earlier, a downstream update would reach a
-  // module not yet ready to route it.
-  await engine.connect(bridge);
+  // The channel opens LAST, but NOT awaited: an earlier connect() call would
+  // reach a module not yet ready to route a downstream update, so it's
+  // still started only now, after "sync" exists -- but local reads/writes
+  // never needed the network, and awaiting a slow or failed connection
+  // attempt here (offline, most of all) delayed connectBridge() past the
+  // Service Worker's own timeout for asking the page, turning a purely
+  // local answer into a hard failure. The connection is best-effort: it
+  // proceeds in the background, and a failure is logged, never thrown.
+  engine.connect(bridge).catch((err: unknown) => {
+    logger.error('sync connection failed to establish', { error: String(err) });
+  });
 
   return sync;
 }
