@@ -571,12 +571,38 @@ pas un simple manque visuel. Ce n'est pas une limite du module : c'est
 ce code frontend précis qui suppose `movementType` toujours rempli, et
 qui ne se protège pas contre son absence.
 
-**Pas corrigé.** Trois façons de le faire, pas encore choisies : ajouter
-`movementType` explicitement dans le corps envoyé par le frontend pour
-ces deux appels, protéger `circularity/page.tsx` (et tout autre endroit
-qui suppose `movementType` non vide) contre une valeur absente, ou
-écrire un vrai gestionnaire personnalisé plutôt qu'une déclaration
-automatique. Les trois ne s'excluent pas.
+**Corrigé le 20/09/2026, quatrième option** : ni changer le corps envoyé
+par le frontend, ni ajouter de garde dans `circularity/page.tsx` — le
+module gagne une nouvelle capacité déclarative, `defaults` : une valeur
+fixe pour une colonne, écrite à chaque insertion locale par CE chemin
+précis, que le corps de la requête la porte ou non.
+```yaml
+material_stock_stock_movement:
+  - /api/kernel/material-stock/movements
+  - path: /api/kernel/material-stock/receipts
+    method: POST
+    defaults: { movement_type: RECEIPT }
+  - path: /api/kernel/material-stock/issues
+    method: POST
+    defaults: { movement_type: ISSUE }
+```
+Une valeur déjà présente dans le corps pour la même colonne gagne
+toujours sur le défaut ; un défaut qui nomme une colonne absente de la
+table est ignoré sans erreur, même tolérance qu'un champ du corps qui
+ne correspond à aucune colonne.
+
+**Où** : le mécanisme (`RequestDef.defaults`) dans le module
+(`EntityRoutes.ts`, `SqlBuilder.ts`, `ComposedOperations.ts`,
+`EntitiesFile.ts`) ; la déclaration (`entities.yaml`) dans
+production-core-main. **Aucun code frontend touché** — demande explicite
+de l'utilisateur, pour éprouver le module jusqu'au bout plutôt que de
+contourner en JavaScript.
+
+**Vérifié en direct**, réseau réellement coupé : `POST /receipts`
+répond localement (`x-offline-sync: local-database`) avec
+`movementType: "RECEIPT"` déjà rempli ; une lecture de `/movements`
+juste après renvoie cette même ligne, correctement typée, sans `null`,
+sans plantage sur `/circularity`.
 
 ---
 
@@ -611,7 +637,7 @@ automatique. Les trois ne s'excluent pas.
 | 15 | Capacité de production (calcul, pas table) | Ni l'un ni l'autre (pas corrigé) | Si corrigé un jour : gestionnaire personnalisé écrit côté application, en s'appuyant sur un mécanisme du module déjà prévu pour ça (l'« operation map »). Le calcul lui-même resterait propre à cette application. |
 | 16 | Le pont attend une connexion réseau pour se brancher | Frontend (`init.ts`, patch à la main) + Module (gabarit) | **Déjà fait**, même remarque qu'aux points 8 et 9. C'est ce correctif-là qui a résolu le symptôme initial (pages vides hors ligne). |
 | 17 | `production_order` en règle 1 avale `/resources` | Frontend (`entities.yaml`) | **Corrigé côté frontend, mais non portable au sens strict** (une déclaration reste propre à l'application) — **la cause reste un manque du module** : une déclaration mieux outillée (voir « idée de correctif de fond ») rendrait ce genre d'erreur impossible à écrire, pas seulement facile à corriger une fois trouvée. |
-| 18 | Écriture hors ligne pour réception/sortie de stock matières | Ni l'un ni l'autre (pas corrigé) | Pas encore tranché : soit le frontend envoie `movementType` explicitement, soit un gestionnaire personnalisé est écrit — dans les deux cas, une décision d'application, le mécanisme du module (écriture composée, file d'attente) est déjà prêt à l'accueillir. |
+| 18 | Écriture hors ligne pour réception/sortie de stock matières | Module (nouvelle capacité `defaults`) + Frontend (déclaration) | **Corrigé sans toucher au frontend.** La nouvelle capacité du module (une valeur fixe par colonne, par chemin) évite complètement le besoin d'un contournement JavaScript — exactement le genre de correction qui appartient au module, pas à l'application. |
 
 **Constat général** : sur 18 corrections, 2 seulement (points 6-7, 10-11
 comptés une fois chacun comme « infrastructure ») ne concernaient ni le
@@ -645,6 +671,14 @@ des données propres à l'application, pas des défauts du module.
   fichier (`initSync()`), le correctif tient en trois lignes de plus, et
   il a été vérifié pour de vrai — réseau réellement coupé, rechargement
   à froid — pas seulement en supposant que ça devait marcher.
+- Le point 18 (réception/sortie hors ligne) confirme la même chose sous
+  un autre angle : au lieu de contourner en JavaScript (envoyer
+  `movementType` à la main, ou garder `circularity/page.tsx` contre une
+  valeur absente), le vrai trou a pu être comblé DANS le module
+  (`defaults`, une valeur fixe par colonne selon le chemin) — zéro ligne
+  de frontend changée, et n'importe quelle autre table dans la même
+  situation (un serveur qui déduit une colonne du chemin plutôt que du
+  corps) en bénéficie déjà, pas seulement `material_stock_stock_movement`.
 - Le module a échoué PROPREMENT face aux deux bugs serveur (points 10,
   11) : il n'a jamais menti, ni affiché de fausses données — il a
   silencieusement refusé une ligne qu'il ne reconnaissait pas. Un module
