@@ -1,9 +1,5 @@
-import { dirname, isAbsolute, join } from 'node:path';
-
 import { ConfigError, loadConfig, MISSING_POWERSYNC_BLOCK_MESSAGE, writeConfigTemplate } from './ConfigLoader.js';
-import { checkEntities } from './EntitiesChecker.js';
-import { loadEntities, writeEntitiesModule, writeEntitiesTemplate } from './EntitiesFile.js';
-import { readSchemaFile, SCHEMA_FILE, SchemaError } from './ReplicatedSchema.js';
+import { SchemaError } from './ReplicatedSchema.js';
 import { generateSchema, type SchemaOptions, type SchemaResult } from './SchemaCommand.js';
 import {
   addToGitignore,
@@ -20,8 +16,6 @@ import { powerSyncStepsToFunctional } from './presentation/steps.js';
 import type { FunctionalStep, Outcome } from './presentation/types.js';
 import {
   errorToOutcome,
-  toCheckEntitiesOutcome,
-  toEntitiesOutcome,
   toInitOutcome,
   toPowersyncOutcome,
   toScaffoldOutcome,
@@ -30,12 +24,6 @@ import {
 } from './presentation/outcomes.js';
 
 export type { CliOutput };
-
-/** Next to the schema: both generated, never touched by hand, imported by the same wiring. */
-function modulePath(cwd: string, schemaFile: string): string {
-  const dir = dirname(isAbsolute(schemaFile) ? schemaFile : join(cwd, schemaFile));
-  return join(dir, 'entities.ts');
-}
 
 /** Shared by the standalone `init` command and the `setup` chain. */
 function runInit(cwd: string): InitResult {
@@ -48,39 +36,6 @@ function runInit(cwd: string): InitResult {
     secretsWritten: secrets.written,
     gitignoreUpdated: ignore.state === 'done',
   };
-}
-
-function runEntities(cwd: string, path?: string): Outcome {
-  const config = loadConfig(cwd);
-  const schemaFile = config.powersync?.schemaFile ?? SCHEMA_FILE;
-  const schema = readSchemaFile(cwd, schemaFile);
-
-  if (schema === undefined) {
-    throw new ConfigError(
-      `${schemaFile} was not found: without it there's no way to know which ` +
-        'tables the engine replicates, and the template would be empty. Run ' +
-        '"offline-sync schema" first.',
-    );
-  }
-
-  const r = writeEntitiesTemplate(cwd, schema, path);
-
-  if (!r.written) {
-    writeEntitiesModule(loadEntities(cwd, path), modulePath(cwd, schemaFile), new Date().toISOString());
-  }
-
-  return toEntitiesOutcome({ written: r.written, tableCount: schema.tables.length, missing: r.missing });
-}
-
-function runCheckEntities(cwd: string, path?: string): Outcome {
-  const config = loadConfig(cwd);
-  const schemaFile = config.powersync?.schemaFile ?? SCHEMA_FILE;
-  const declaration = loadEntities(cwd, path);
-
-  const r = checkEntities({ declaration, schema: readSchemaFile(cwd, schemaFile) });
-  writeEntitiesModule(declaration, modulePath(cwd, schemaFile), new Date().toISOString());
-
-  return toCheckEntitiesOutcome(r);
 }
 
 export interface ChainOptions {
@@ -186,7 +141,6 @@ export async function runSetup(options: ChainOptions): Promise<Outcome> {
     headline: 'Setup complete',
     steps,
     summary: ['Edit tokens.ts -- where this application gets its tokens from.'],
-    nextCommand: 'offline-sync entities',
     details: [...schemaDetails, ...scaffoldDetails],
   };
 }
@@ -232,16 +186,12 @@ export class Cli {
         return toSchemaOutcome(await generateSchema({ cwd }));
       case 'scaffold':
         return toScaffoldOutcome(scaffold({ cwd }));
-      case 'entities':
-        return runEntities(cwd);
-      case 'check-entities':
-        return runCheckEntities(cwd);
       default:
         return {
           state: 'error',
           command: 'setup',
           headline: command === undefined ? 'No command given' : `Unknown command: "${command}"`,
-          problem: 'Expected one of: setup, powersync, init, schema, scaffold, entities, check-entities.',
+          problem: 'Expected one of: setup, powersync, init, schema, scaffold.',
           nextCommand: 'offline-sync setup',
           details: [{ label: 'argv', value: argv.join(' ') }],
         };

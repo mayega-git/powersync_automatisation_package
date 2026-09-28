@@ -1,5 +1,4 @@
 import type { LocalDatabaseSession, SqlRow } from './AccessLocalDatabase.js';
-import type { HttpRequest } from './HttpRequest.js';
 
 /** Declared `localOnly` in the schema: never replicated, so it can't trigger an upload by itself. */
 export const QUEUE_TABLE = '_file_attente';
@@ -80,14 +79,6 @@ export async function dequeue(
   if (ids.length === 0) return;
   const placeholders = ids.map(() => '?').join(', ');
   await tx.writeData(`DELETE FROM ${QUEUE_TABLE} WHERE id IN (${placeholders})`, [...ids]);
-}
-
-export function toHttpRequest(queued: QueuedRequest): HttpRequest {
-  return {
-    method: queued.method,
-    url: queued.path,
-    ...(queued.body !== undefined ? { body: queued.body } : {}),
-  };
 }
 
 function toQueuedRequest(row: SqlRow): QueuedRequest {

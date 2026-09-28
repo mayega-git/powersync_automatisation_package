@@ -406,3 +406,95 @@ describe('OfflineSyncConnector -- onDeadLetter callback', () => {
     expect(onDeadLetter).not.toHaveBeenCalled();
   });
 });
+
+describe('OfflineSyncConnector -- onConflict hook', () => {
+  it('no built-in rule ever produces a conflict: an unclassified 409 is a plain rejection', async () => {
+    const onConflict = vi.fn();
+    const logger = new SilentLogger();
+    const db = memoryDb();
+    const deadLetters = new DeadLetterStore({ db });
+    const connector = new OfflineSyncConnector({
+      http: { send: async () => ({ status: 409, headers: {}, body: {} }) },
+      tokens,
+      deadLetters,
+      errors: new ErrorHandlerRegistry({ logger }),
+      logger,
+      syncEndpoint: 'https://sync.test',
+      onConflict,
+    });
+
+    await connector.uploadData(tx([write()]).transaction);
+
+    expect(onConflict).not.toHaveBeenCalled();
+    expect(await deadLetters.count()).toBe(1);
+  });
+
+  it('discards without calling anything when no hook is supplied: today\'s behavior is unchanged', async () => {
+    const logger = new SilentLogger();
+    const db = memoryDb();
+    const connector = new OfflineSyncConnector({
+      http: { send: async () => ({ status: 409, headers: {}, body: {} }) },
+      tokens,
+      deadLetters: new DeadLetterStore({ db }),
+      errors: new ErrorHandlerRegistry({ logger }),
+      logger,
+      syncEndpoint: 'https://sync.test',
+      classifyStatus: (res) => (res.status === 409 ? 'conflict' : undefined),
+    });
+
+    await connector.uploadData(tx([write()]).transaction);
+
+    expect(await new DeadLetterStore({ db }).count()).toBe(1);
+  });
+
+  it('discards when the hook returns "discard"', async () => {
+    const onConflict = vi.fn(async () => 'discard' as const);
+    const logger = new SilentLogger();
+    const db = memoryDb();
+    const deadLetters = new DeadLetterStore({ db });
+    const connector = new OfflineSyncConnector({
+      http: { send: async () => ({ status: 409, headers: {}, body: {} }) },
+      tokens,
+      deadLetters,
+      errors: new ErrorHandlerRegistry({ logger }),
+      logger,
+      syncEndpoint: 'https://sync.test',
+      classifyStatus: (res) => (res.status === 409 ? 'conflict' : undefined),
+      onConflict,
+    });
+
+    await connector.uploadData(tx([write()]).transaction);
+
+    expect(onConflict).toHaveBeenCalledTimes(1);
+    expect(onConflict).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'blog-1' }),
+      expect.any(ClassifiedError),
+    );
+    expect(await deadLetters.count()).toBe(1);
+  });
+
+  it('retries -- rethrows instead of discarding -- when the hook returns "retry"', async () => {
+    const onConflict = vi.fn(async () => 'retry' as const);
+    const logger = new SilentLogger();
+    const db = memoryDb();
+    const deadLetters = new DeadLetterStore({ db });
+    const connector = new OfflineSyncConnector({
+      http: { send: async () => ({ status: 409, headers: {}, body: {} }) },
+      tokens,
+      deadLetters,
+      errors: new ErrorHandlerRegistry({ logger }),
+      logger,
+      syncEndpoint: 'https://sync.test',
+      classifyStatus: (res) => (res.status === 409 ? 'conflict' : undefined),
+      onConflict,
+    });
+
+    const err = await connector
+      .uploadData(tx([write()]).transaction)
+      .catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(ClassifiedError);
+    expect((err as ClassifiedError).kind).toBe('conflict');
+    expect(await deadLetters.count()).toBe(0);
+  });
+});

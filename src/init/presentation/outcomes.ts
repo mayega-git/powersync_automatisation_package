@@ -1,6 +1,4 @@
 import { ConfigError, MISSING_POWERSYNC_BLOCK_MESSAGE } from '../ConfigLoader.js';
-import { EntitiesError } from '../EntitiesFile.js';
-import type { EntitiesCheckResult } from '../EntitiesChecker.js';
 import { ADMIN_TOKEN_KEY, NO_TOKEN_MESSAGE, SECRETS_FILE } from '../SecretsFile.js';
 import { URL_VARIABLE, type SetupResult, type Step } from '../PowerSyncSetup.js';
 import type { SchemaResult } from '../SchemaCommand.js';
@@ -114,7 +112,7 @@ export function toSchemaOutcome(result: SchemaResult): Outcome {
     command: 'schema',
     headline: `Schema fetched${reduced ? ' with reduced accuracy' : ''}: ${result.schema.tables.length} tables, ${bucketCount} buckets`,
     reason: reduced ? 'Some unusual query shapes may not have been detected.' : undefined,
-    nextCommand: 'offline-sync entities',
+    nextCommand: 'offline-sync scaffold',
     details,
   };
 }
@@ -122,13 +120,14 @@ export function toSchemaOutcome(result: SchemaResult): Outcome {
 export function toScaffoldOutcome(result: ScaffoldResult): Outcome {
   const summary = [
     'Edit tokens.ts -- where this application gets its tokens from.',
-    'init.ts and pont.ts are generated automatically; only tokens.ts needs your input.',
+    'init.ts is generated automatically; only tokens.ts needs your input.',
+    'Write your own LOCAL_WRITES/LOCAL_READS registry and wire it into the one place your application calls fetch() -- see docs/OfflineSync.md.',
   ];
 
-  // scaffold() always pushes tokens.ts, init.ts, pont.ts, then sw.ts, then
+  // scaffold() always pushes tokens.ts, init.ts, then sw.ts, then
   // (only when sw.ts was newly written) the Serwist route.
-  const sw = result.files[3];
-  const route = result.files[4];
+  const sw = result.files[2];
+  const route = result.files[3];
 
   if (sw?.written === false) {
     summary.push(
@@ -166,72 +165,7 @@ export function toScaffoldOutcome(result: ScaffoldResult): Outcome {
     command: 'scaffold',
     headline: 'Application wired to the engine',
     summary,
-    nextCommand: 'offline-sync entities',
     details,
-  };
-}
-
-export interface EntitiesResult {
-  written: boolean;
-  tableCount: number;
-  missing: string[];
-}
-
-export function toEntitiesOutcome(result: EntitiesResult): Outcome {
-  if (result.written) {
-    return {
-      state: 'success',
-      command: 'entities',
-      headline: 'Entity declaration created',
-      summary: [`${result.tableCount} table(s) added, ready to fill in paths.`],
-      nextCommand: 'offline-sync check-entities',
-      details: [],
-    };
-  }
-
-  if (result.missing.length === 0) {
-    return {
-      state: 'success',
-      command: 'entities',
-      headline: 'Entity declaration already exists',
-      nextCommand: 'offline-sync check-entities',
-      details: [],
-    };
-  }
-
-  return {
-    state: 'warning',
-    command: 'entities',
-    headline: 'Entity declaration is missing tables',
-    reason:
-      `${result.missing.length} replicated table(s) never appear in it. A missing ` +
-      'table is never intercepted, and nothing says so at runtime.',
-    fix: { file: 'offline-sync.entities.yaml', steps: result.missing.map((t) => `Add a path for "${t}"`) },
-    nextCommand: 'offline-sync check-entities',
-    details: [],
-  };
-}
-
-export function toCheckEntitiesOutcome(result: EntitiesCheckResult): Outcome {
-  if (result.ok) {
-    return {
-      state: 'success',
-      command: 'check-entities',
-      headline: 'Entity declaration is valid',
-      summary: [`${result.tables.length} table(s), ${result.paths.length} path(s) confirmed.`],
-      details: [],
-    };
-  }
-
-  return {
-    state: 'error',
-    command: 'check-entities',
-    headline: 'Entity declaration has problems',
-    problem: `${result.errors.length} problem(s) found in the declaration.`,
-    reason: result.errors.map((e) => `- ${e.subject}: ${e.message}`).join('\n'),
-    fix: { file: 'offline-sync.entities.yaml', steps: ['Fix the issues listed above.'] },
-    nextCommand: 'offline-sync check-entities',
-    details: [],
   };
 }
 
@@ -317,19 +251,6 @@ export function errorToOutcome(err: unknown, context: ErrorContext): Outcome {
       headline: 'Unable to fetch the schema',
       reason: err.message,
       fix: { file: 'offline-sync.config.yaml', key: 'powersync.adminUrl', steps: [] },
-      nextCommand,
-      resumable: true,
-      details: [],
-    };
-  }
-
-  if (err instanceof EntitiesError) {
-    return {
-      state: 'blocked',
-      command: context.command,
-      headline: 'Entity declaration problem',
-      reason: err.message,
-      fix: { file: 'offline-sync.entities.yaml', steps: [] },
       nextCommand,
       resumable: true,
       details: [],

@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
-import { INIT_FILE, PONT_FILE, scaffold, SW_FILE, TOKENS_FILE } from '../../src/init/ScaffoldCommand.js';
+import { INIT_FILE, scaffold, SW_FILE, TOKENS_FILE } from '../../src/init/ScaffoldCommand.js';
 import type { SyncConfig } from '../../src/init/types.js';
 
 const config: SyncConfig = {
@@ -34,7 +34,7 @@ function read(cwd: string, name: string): string {
 }
 
 describe('the wiring files', () => {
-  it('drops tokens.ts, init.ts, pont.ts and sw.ts next to the schema: the engine folder already exists', () => {
+  it('drops tokens.ts, init.ts and sw.ts next to the schema: the engine folder already exists', () => {
     const cwd = project();
     const r = run(cwd);
     expect(r.dir).toBe('src/services/offline');
@@ -44,11 +44,10 @@ describe('the wiring files', () => {
           (f) =>
             f.path.endsWith(TOKENS_FILE) ||
             f.path.endsWith(INIT_FILE) ||
-            f.path.endsWith(PONT_FILE) ||
             f.path.endsWith(SW_FILE),
         )
         .map((f) => f.written),
-    ).toEqual([true, true, true, true]);
+    ).toEqual([true, true, true]);
   });
 
   it('never overwrites an existing file: it holds work done by hand', () => {
@@ -63,7 +62,6 @@ describe('the wiring files', () => {
     expect(tokens?.reason).toMatch(/already exists/);
     // The other ones are still dropped: each file is independent.
     expect(r.files.find((f) => f.path.endsWith(INIT_FILE))?.written).toBe(true);
-    expect(r.files.find((f) => f.path.endsWith(PONT_FILE))?.written).toBe(true);
     expect(r.files.find((f) => f.path.endsWith(SW_FILE))?.written).toBe(true);
   });
 });
@@ -75,9 +73,6 @@ describe('the Service Worker', () => {
     const sw = r.files.find((f) => f.path.endsWith(SW_FILE));
     expect(sw?.written).toBe(true);
     const text = read(cwd, SW_FILE);
-    expect(text).toContain('CacheRules');
-    expect(text).toContain('serveFromPage');
-    expect(text).toContain("from './entities'");
     // The concrete "TO FILL IN" the user asked for: a place to list pages
     // that must be available offline before anyone has visited them.
     expect(text).toContain('PAGES_TO_PRECACHE');
@@ -208,23 +203,21 @@ describe('the token provider', () => {
 });
 
 describe('the wiring', () => {
-  it('imports entities and the schema as same-directory siblings', () => {
+  it('imports the schema as a same-directory sibling', () => {
     const cwd = project();
     run(cwd);
     const text = read(cwd, INIT_FILE);
-    expect(text).toContain("from './entities'");
     expect(text).toContain("from './schema'");
-    expect(text).toContain('tableColumnsFromSchema(AppSchema)');
   });
 
-  it('keeps importing them as siblings regardless of the schema folder depth', () => {
+  it('keeps importing it as a sibling regardless of the schema folder depth', () => {
     const cwd = project();
     run(cwd, {
       ...config,
       powersync: { ...config.powersync!, schemaFile: 'app/offline/schema.ts' },
     });
     const text = readFileSync(join(cwd, 'app/offline', INIT_FILE), 'utf8');
-    expect(text).toContain("from './entities'");
+    expect(text).toContain("from './schema'");
   });
 
   it('opens the channel LAST', () => {

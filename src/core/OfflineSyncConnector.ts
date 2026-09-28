@@ -45,7 +45,26 @@ export interface OfflineSyncConnectorOptions {
    * UI, see `@ksm/offline-sync/ui`) instead of polling `pendingIssueCount()`.
    */
   onDeadLetter?: (entry: DeadLetterEntry) => void;
-  /** Overrides how an HTTP status maps to a retry/reject/reauth decision. */
+  /**
+   * Called when a write is classified `conflict` (see `classifyStatus`):
+   * the entity it targeted moved on the server in the meantime. The module
+   * has no business rules of its own to decide what happens next -- that
+   * decision belongs to the host, which knows the domain.
+   *
+   * - return (or resolve to) `'retry'`: the write is treated like a
+   *   transient failure and rethrown, so the transaction is retried on the
+   *   next `uploadData()` pass. Use this after rebasing the local write
+   *   against the current server state (fetched through `localDatabase()`
+   *   or the host's own client).
+   * - return `'discard'`, `undefined`, or leave this option unset: the
+   *   write is dead-lettered, exactly like today's default for any other
+   *   definitive rejection.
+   */
+  onConflict?: (
+    write: PendingWrite,
+    error: ClassifiedError,
+  ) => Promise<'retry' | 'discard' | void> | 'retry' | 'discard' | void;
+  /** Overrides how an HTTP status maps to a retry/reject/reauth/conflict decision. */
   classifyStatus?: StatusClassifier;
   /** Optional: records dead-letters and reauth events, for `@ksm/offline-sync/ui`'s activity feed. */
   activity?: ActivityLog;
@@ -174,6 +193,24 @@ export class OfflineSyncConnector {
         status: response.status,
       });
       throw classified;
+    }
+
+    if (classified.kind === 'conflict') {
+      const decision = (await this.o.onConflict?.(write, classified)) ?? 'discard';
+      this.o.activity?.record('conflict', { operationId: metadata.operationId, decision });
+
+      if (decision === 'retry') {
+        this.o.logger.warn('conflict: host asked for a retry after rebasing', {
+          operationId: metadata.operationId,
+        });
+        throw classified;
+      }
+
+      this.o.logger.error('conflict: no resolution, discarding', {
+        operationId: metadata.operationId,
+      });
+      await this.discard(write, classified, metadata);
+      return false;
     }
 
     await this.discard(write, classified, metadata);

@@ -25,8 +25,8 @@ répertoire où son script est servi -- jamais le reste de l'application.**
 C'est le piège le plus sournois : l'enregistrement réussit, `sw.js` s'active
 normalement, mais `navigator.serviceWorker.controller` reste `null` sur
 toutes les vraies pages. Aucune exception, aucune erreur console -- le mode
-hors ligne semble juste ne jamais s'enclencher, alors que tout le reste (le
-pont, `entities.yaml`, `schema.ts`) est correct.
+hors ligne semble juste ne jamais s'enclencher, alors que tout le reste
+(l'appel direct à `sync.write()`/`sync.read()`, `schema.ts`) est correct.
 
 **Cas réel rencontré** : un Service Worker servi à `/serwist/sw.js` sans
 `scope` prend par défaut la portée `/serwist/` (le répertoire du script).
@@ -58,12 +58,12 @@ import { registerServiceWorker } from "@ksm/offline-sync/pwa"
 registerServiceWorker("/serwist/sw.js", { navigator, logger: console })
 ```
 
-Et connectez le pont (`connectBridge`, voir section 3) même si vous
-n'utilisez pas `registerServiceWorker` : il avertit désormais (une fois,
-après 5 secondes) si la page n'est contrôlée par aucun Service Worker --
-`warnIfNeverControlled`, câblé automatiquement dans `connectBridge`. Ça ne
-remplace pas de vérifier `scope`, mais ça transforme un échec silencieux en
-avertissement explicite dans la console.
+Appelez aussi `warnIfNeverControlled` (`@ksm/offline-sync/pwa`) juste après
+l'enregistrement : il avertit (une fois, après 5 secondes) si la page n'est
+contrôlée par aucun Service Worker -- signe que la navigation/le cache des
+assets ne s'appliquera jamais ici. Ça ne remplace pas de vérifier `scope`,
+mais ça transforme un échec silencieux en avertissement explicite dans la
+console.
 
 ---
 
@@ -82,13 +82,18 @@ Avec **Next.js App Router**, lorsque l'utilisateur navigue via un `<Link>`, Next
 
 Pour résoudre cela, le Service Worker doit utiliser un outil comme **Serwist** ou **Workbox** avec des règles de cache spécifiques qui "nettoient" les requêtes RSC avant de chercher dans le cache.
 
+**Ce Service Worker ne voit plus jamais une requête métier.** Depuis le
+retrait du mécanisme d'interception (2026-09-27), `sync.write()`/
+`sync.read()` répondent au seul endroit où l'application appelle `fetch()`
+(voir section 3) -- rien de métier n'atteint donc jamais ce fichier. Son
+seul rôle est la mise en cache de la navigation et des assets statiques.
+
 ### Stratégies de Cache Recommandées
 
-Voici la configuration complète à utiliser dans votre `sw.ts` pour Next.js :
+Voici la configuration à utiliser dans votre `sw.ts` pour Next.js :
 
 ```typescript
-import { NetworkFirst, CacheFirst, StaleWhileRevalidate, ExpirationPlugin, Serwist } from 'serwist';
-import { serveFromPage } from '@ksm/offline-sync/pwa';
+import { NetworkFirst, CacheFirst, ExpirationPlugin, Serwist } from 'serwist';
 
 // 1. Définition des caches
 const PAGES_CACHE = 'next-pages-cache';
@@ -142,47 +147,35 @@ const serwist = new Serwist({
   ],
 });
 
-// 3. Interception par le module Offline Sync
-const demanderALaPage = serveFromPage({
-  clients: self.clients,
-  openChannel: () => new MessageChannel(),
-  buildResponse: (corps, init) => new Response(corps, init),
-  goToNetwork: (requete) => fetch(requete as Request),
-});
-
 self.addEventListener('fetch', (event) => {
-  // On laisse le module intercepter les requêtes API (fetch).
-  // Si le module ignore la requête, on laisse Serwist (le cache PWA) s'en charger.
-  event.respondWith(
-    demanderALaPage({ request: event.request, url: new URL(event.request.url) })
-      .then((reponse) => {
-        if (reponse === undefined) return serwist.handleFetch(event);
-        return reponse as Response;
-      })
-  );
+  event.respondWith(serwist.handleFetch(event));
 });
 ```
 
 ---
 
-## 3. L'Interception des requêtes métier
+## 3. Les requêtes métier : `sync.write()`/`sync.read()`, pas d'interception
 
-### Le pont (Bridge)
-Le Service Worker n'a pas accès à SQLite directement. Il utilise un **pont** (`serveFromPage`) pour relayer les requêtes API (les `fetch` de l'application) vers la fenêtre principale du navigateur (le composant React).
+Le Service Worker n'a pas accès à SQLite directement, et n'a plus besoin d'y
+accéder : il ne voit jamais une requête métier. `lib/api/kernel.ts` (ou son
+équivalent, le seul endroit de l'application qui appelle `fetch()`) vérifie
+d'abord un registre écrit à la main (`LOCAL_WRITES`/`LOCAL_READS`) ; si la
+requête y figure et que le module est prêt, elle est répondue localement via
+`sync.write()`/`sync.read()` -- sinon elle part normalement en réseau. Voir
+[OfflineSync.md](../docs/implementation/OfflineSync.md) pour l'interface
+complète, et `lib/offline/localWrites.ts` d'une application déjà câblée pour
+un exemple concret.
 
 ### Pourquoi `OfflineSyncProvider` est-il un composant React et non un simple import ?
 
-
 1. **Agnosticisme de framework** : Le module `@ksm/offline-sync` est conçu en pur TypeScript. Il ne dépend pas de React. Il peut être utilisé avec Vue, Angular, ou Vanilla JS.
 2. **Cycle de vie et Session** : L'initialisation de la base de données locale (PowerSync/SQLite) nécessite souvent de connaître l'utilisateur connecté (le token d'authentification). Le composant Provider attend que l'application React ait chargé son `AuthProvider` avant de déclencher `initSync()`.
-3. **Persistance du pont** : Le pont (`connectBridge`) utilise un écouteur d'événements `MessageChannel` qui doit exister de manière continue tant que l'utilisateur navigue. Monter un Provider à la racine de l'arbre (`layout.tsx`) garantit que le pont reste ouvert, et qu'il se ferme proprement lors du démontage.
 
 ### `OfflineSyncProvider` est déjà écrit -- ne le réimplémentez pas
 
-Le module exporte le composant tout fait, `@ksm/offline-sync/ui`. Il fait
-exactement ce que la section précédente décrit (`initSync()` puis
-`connectBridge()`, avec `warnIfNeverControlled` câblé) -- inutile de le
-réécrire à la main dans l'application.
+Le module exporte le composant tout fait, `@ksm/offline-sync/ui`. Il ne fait
+plus qu'une chose : appeler `initSync()` et exposer `isReady` -- inutile de
+le réécrire à la main dans l'application.
 
 L'enregistrement du Service Worker, lui, **reste à la charge de
 l'application** (le module ne connaît ni votre build, ni où `sw.js` est
@@ -267,76 +260,45 @@ est déclenchable, c'est un tableau de bord, pas une console de commande.
 
 ---
 
-## 4. Le fichier `entities.yaml` et le formatage des données
+## 4. Le registre `LOCAL_WRITES`/`LOCAL_READS` et le formatage des données
 
-### Le mapping sans méthodes
-Le fichier `offline-sync.entities.yaml` indique au module quelle URL correspond à quelle table SQLite.
-**Règle d'or :** N'ajoutez **aucun préfixe HTTP** (`GET`, `POST`, etc.) dans ce fichier. Le module utilise ces chemins comme des préfixes et intercepte toutes les méthodes HTTP correspondantes de lui-même en les déduisant !
-```yaml
-  # FAUX : 
-  # inventory_balance:
-  #   - GET /api/kernel/stock/balances
+### Le mapping, écrit à la main, pas déclaré dans un fichier séparé
 
-  # VRAI :
-  inventory_balance:
-    - /api/kernel/stock/balances
-```
-
-### Un segment de chemin qui filtre, pas qui identifie : `params`
-
-La règle simple ci-dessus suppose qu'un segment de chemin (`{id}`) désigne
-toujours la ligne elle-même. Ce n'est pas toujours vrai : une route comme
-`manufacturing/configuration/{type}` (où `{type}` vaut `product-profile`
-ou `material-profile`) ne demande pas la ligne d'id `product-profile` --
-elle demande toutes les lignes dont la colonne `item_type` vaut
-`product-profile`. Sans le dire explicitement, le module lirait ce segment
-comme un id et ne trouverait jamais rien (`WHERE id = 'product-profile'`,
-`id` étant un UUID généré).
-
-`params` (forme objet, règle 2 uniquement) fait ce lien explicite,
-segment de chemin -> vrai nom de colonne :
-
-```yaml
-configuration_item:
-  - path: /api/kernel/manufacturing/configuration/{type}
-    method: GET
-    params: { type: item_type }
-  - path: /api/kernel/manufacturing/configuration/{type}
-    method: POST
-    params: { type: item_type }
-  - path: /api/kernel/manufacturing/configuration/{type}/{id}
-    method: PUT
-    # pas besoin de "params" ici : {id} est déjà lu comme l'id de la ligne,
-    # {type} filtre en plus mais sans mapping explicite il est ignoré --
-    # acceptable pour un PUT/DELETE ciblé, mais pas pour un GET/POST en liste.
-  - path: /api/kernel/manufacturing/configuration/{type}/{id}
-    method: DELETE
-```
-
-Un segment absent de `params` garde exactement le comportement historique
-(dernier segment = id) : rien ne change pour les déclarations qui n'en ont
-pas besoin.
-
-### Le formatage des réponses (`offline-formatter.ts`)
-En mode hors-ligne (Offline-First), la majorité des données métier proviennent de la base SQLite locale. Or, la structure des tables SQL ne correspond presque jamais parfaitement à ce que vos composants React attendent (attentes de type `camelCase`, colonnes manquantes, champs JSON sérialisés).
-
-Il est **fortement recommandé** d'imposer un formatage strict via un intercepteur (souvent placé dans votre client API comme `kernel.ts` ou `api.ts`), plutôt que d'exposer la logique SQL ou la structure brute de SQLite au frontend.
+Il n'y a plus de fichier `entities.yaml` : chaque route qui doit être
+répondue localement a sa propre entrée dans un registre TypeScript ordinaire
+(`LOCAL_WRITES` pour l'écriture, `LOCAL_READS` pour la lecture), tenu par
+l'application, à côté de `kernel.ts`. Une entrée associe une clé
+`"MÉTHODE chemin"` à une fonction `build()` qui renvoie le SQL, ses
+paramètres, et -- pour une écriture -- l'`id` à réutiliser pour `_metadata`.
 
 ```typescript
-// Exemple de formatage dans lib/api/offline-formatter.ts
-export function formatOfflineResponse(path: string, rawData: any[]): any {
-  const camelCased = convertToCamelCase(rawData);
-
-  if (path.includes('stock/balances')) {
-    // Adapter le modèle SQL au modèle UI attendu
-    return camelCased.map(row => ({
-      ...row,
-      productId: row.organizationProductId // La UI attend productId, SQLite renvoie organizationProductId
-    }));
-  }
-  return camelCased;
-}
+// lib/offline/localReads.ts (exemple réduit)
+export const LOCAL_READS: Record<string, LocalReadMapping> = {
+  'manufacturing/boms': {
+    table: 'bill_of_materials',
+    build: ({ query }) => ({
+      sql: 'SELECT id, name, output_product_id AS outputProductId FROM bill_of_materials WHERE organization_id = ? AND agency_id = ? ORDER BY name',
+      params: [query.organizationId, query.agencyId],
+      single: false,
+    }),
+  },
+};
 ```
+
+Rien n'est déduit d'un préfixe ni d'un segment `{id}` : le développeur voit
+et écrit exactement le SQL qui tourne, y compris un filtre par colonne qui
+n'a rien à voir avec l'id de la ligne (l'ancien rôle de `params` dans
+`entities.yaml`).
+
+### Le formatage des réponses
+
+La structure des tables SQL ne correspond presque jamais parfaitement à ce
+que vos composants React attendent (`camelCase`, champs JSON sérialisés).
+Plutôt qu'un formateur générique séparé, la projection `AS camelCase` se
+fait directement dans le SQL de chaque entrée `LOCAL_READS` (comme dans
+l'exemple ci-dessus), et une petite fonction partagée (`toCamelRow`, dans
+`lib/offline/localWrites.ts`) couvre le cas générique restant pour les
+écritures (`RETURNING *` renvoie les colonnes telles quelles en base).
 
 ## Résumé
 1. **Toujours tester en Production (`npm run build`).**
@@ -344,10 +306,11 @@ export function formatOfflineResponse(path: string, rawData: any[]): any {
    (`registerServiceWorker` du module) -- sinon il ne contrôle que son
    propre répertoire, silencieusement.
 3. **Nettoyer `?_rsc`** dans les règles de cache du Service Worker.
-4. Ne mettez **pas de GET/POST** dans la forme simple de `entities.yaml`
-   (règle 1) ; utilisez `params` (règle 2) quand un segment de chemin
-   filtre une colonne au lieu de désigner la ligne.
+4. Une route servie localement a sa propre entrée dans `LOCAL_WRITES`/
+   `LOCAL_READS`, avec son SQL écrit à la main -- rien n'est déduit d'un
+   préfixe ou d'un segment de chemin.
 5. Montez `<offline-sync-activity>` (ou au minimum `<offline-sync-issues>`)
    quelque part en développement : un échec silencieux (scope, requête non
    déclarée, rejet définitif) devient visible immédiatement.
-6. Gardez le **frontend agnostique** : utilisez un formateur central pour transformer les données SQL brutes en modèles adaptés pour vos composants React, car la BD est la source unique de vérité.
+6. Gardez le **frontend agnostique** : la projection `AS camelCase` vit dans
+   le SQL de chaque entrée `LOCAL_READS`, pas dispersée dans les composants.

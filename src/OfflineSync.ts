@@ -1,12 +1,5 @@
-import type { AccessLocalDatabase } from './core/AccessLocalDatabase.js';
+import type { AccessLocalDatabase, SqlValue } from './core/AccessLocalDatabase.js';
 import { ActivityLog, type ActivityEvent } from './core/ActivityLog.js';
-import { ComposedOperations } from './core/ComposedOperations.js';
-import { Converter } from './core/Converter.js';
-import { EntityRoutes, type EntitiesDeclaration } from './core/EntityRoutes.js';
-import {
-  DEFAULT_DEDUP_WINDOW_MS,
-  DuplicateGuard,
-} from './core/DuplicateGuard.js';
 import {
   DeadLetterStore,
   type DeadLetterEntry,
@@ -15,48 +8,26 @@ import {
   ErrorHandlerRegistry,
   type ErrorHandler,
 } from './core/ErrorHandlerRegistry.js';
-import type { Handler, Response } from './core/Handler.js';
-import type { HttpClient } from './core/HttpClient.js';
-import type { HttpRequest } from './core/HttpRequest.js';
-import { Interceptor } from './core/Interceptor.js';
 import { defaultLogger, type Logger } from './core/Logger.js';
-import type { OfflineMap } from './core/OperationMapping.js';
-import { RequestRegistry } from './core/RequestRegistry.js';
-import type { TableColumns } from './core/SqlBuilder.js';
+import { enqueue } from './core/PendingQueue.js';
 import type { SyncConnectorPort } from './core/SyncConnectorPort.js';
-import { validateOfflineMap } from './core/validateOfflineMap.js';
-import { FetchClient } from './core/FetchClient.js';
+
+export type ResponseStatus = 'Success' | 'Fail';
+
+export interface Response<T = unknown> {
+  status: ResponseStatus;
+  entity: T;
+}
 
 export interface OfflineSyncOptions {
   /** The sync engine, already built by the application. Never constructed by the module. */
   connector: SyncConnectorPort;
-
-  /** Table-to-request declaration, the content of offline-sync.entities.yaml. */
-  entities?: EntitiesDeclaration;
-
-  /** Real columns of each table. Required as soon as `entities` is provided. */
-  tableColumns?: TableColumns;
-
-  /** Optional hand-written handlers file. A declared handler always wins over composed SQL. */
-  requests?: Readonly<Record<string, Handler>>;
-
-  /** Operations map that accompanies those handlers. Optional. */
-  offlineMap?: OfflineMap;
 
   /** What to do with a definitive rejection, per operation. */
   errorHandlers?: Readonly<Record<string, ErrorHandler>>;
 
   /** Without it, everything logs to the console. */
   logger?: Logger;
-
-  /** Without it, the module falls back to its own network client. */
-  httpClient?: HttpClient;
-
-  /** Prefix for relative paths, passed to the default client. */
-  baseUrl?: string;
-
-  /** Duplicate-protection window, when an operation doesn't declare its own. */
-  dedupWindowMs?: number;
 
   /**
    * Shared trail of module activity, for `@ksm/offline-sync/ui`'s activity
@@ -69,13 +40,49 @@ export interface OfflineSyncOptions {
   activity?: ActivityLog;
 }
 
+/**
+ * A write the application performs directly, bypassing HTTP interception
+ * entirely: the caller already knows what SQL to run and what request it
+ * should become on replay -- there is no `entities.yaml`/`EntityRoutes`
+ * declaration to resolve against. See `OfflineSync.write`.
+ */
+export interface DirectWriteInput {
+  /**
+   * Also bound to `_metadata` by the caller's own SQL (as `:_metadata` or
+   * equivalent) -- this is what lets `OfflineSyncConnector.uploadData()`
+   * find this write's queued request again once the engine reports it as a
+   * pending CRUD entry. The target table MUST declare `trackMetadata: true`
+   * in the PowerSync schema, or the engine never reports `_metadata` back
+   * and the write is replayed as an unroutable one (dead-lettered).
+   */
+  id: string;
+  /** HTTP verb this write replays as, once the network is back. */
+  method: string;
+  /** Full path (with query string, if any) the write replays against. */
+  url: string;
+  /** SQL to run against the local database now. Must end in `RETURNING *`, per this module's convention, for `entity` to come back non-null. */
+  sql: string;
+  params?: readonly SqlValue[];
+  /** Sent as the body when the write is replayed. Defaults to `params` when omitted. */
+  body?: unknown;
+}
+
+/**
+ * A read the application performs directly, against hand-written SQL: no
+ * `entities.yaml`/`EntityRoutes` declaration to resolve against, no
+ * generated projection. See `OfflineSync.read`.
+ */
+export interface DirectReadInput {
+  /** SQL the caller wrote by hand, with its own `AS camelCase` aliases. Positional (`?`) placeholders. */
+  sql: string;
+  params?: readonly SqlValue[];
+  /** `true` reads a single row (or `null`); omitted/`false` reads a list. */
+  single?: boolean;
+}
+
 export class OfflineSync {
   private constructor(
-    private readonly interceptor: Interceptor,
-    private readonly converter: Converter,
-    private readonly composed: ComposedOperations | undefined,
     private readonly deadLetters: DeadLetterStore,
-    readonly requests: RequestRegistry,
     readonly errorHandlers: ErrorHandlerRegistry,
     readonly db: AccessLocalDatabase,
     readonly logger: Logger,
@@ -87,40 +94,7 @@ export class OfflineSync {
   static async create(options: OfflineSyncOptions): Promise<OfflineSync> {
     const logger = options.logger ?? defaultLogger;
 
-    if (options.entities === undefined && options.offlineMap === undefined) {
-      throw new Error(
-        'The module has nothing to intercept: neither "entities" (the table ' +
-          'declaration) nor "offlineMap" (the operations map) was given to it.',
-      );
-    }
-    if (options.entities !== undefined && options.tableColumns === undefined) {
-      throw new Error(
-        '"entities" is given without "tableColumns": the module would know ' +
-          'which table to target but not which columns it has, and the ' +
-          'composed SQL would write columns that don\'t exist. For ' +
-          'PowerSync, pass tableColumnsFromSchema(AppSchema).',
-      );
-    }
-
-    const offlineMap: OfflineMap = options.offlineMap ?? { operations: [] };
-
-    validateOfflineMap(offlineMap);
-
     const db = await options.connector.localDatabase();
-
-    const converter = Converter.fromOfflineMap(offlineMap);
-
-    const composed =
-      options.entities === undefined
-        ? undefined
-        : new ComposedOperations({
-            routes: EntityRoutes.build(options.entities),
-            schema: options.tableColumns!,
-            logger,
-          });
-
-    const requests = new RequestRegistry();
-    if (options.requests !== undefined) requests.registerAll(options.requests);
 
     const errorHandlers = new ErrorHandlerRegistry({ logger });
     if (options.errorHandlers !== undefined) {
@@ -130,37 +104,10 @@ export class OfflineSync {
     const deadLetters = new DeadLetterStore({ db });
     const activityLog = options.activity ?? new ActivityLog();
 
-    const duplicates = new DuplicateGuard({
-      defaultWindowMs: options.dedupWindowMs ?? DEFAULT_DEDUP_WINDOW_MS,
-    });
-
-    const http =
-      options.httpClient ??
-      new FetchClient(options.baseUrl !== undefined ? { baseUrl: options.baseUrl } : {});
-
-    const interceptor = new Interceptor({
-      converter,
-      requests,
-      db,
-      http,
-      logger,
-      duplicates,
-      activity: activityLog,
-      ...(composed !== undefined ? { composed } : {}),
-    });
-
-    logger.info('module ready', {
-      tables: options.entities === undefined ? 0 : Object.keys(options.entities).length,
-      operations: offlineMap.operations.length,
-      handlers: requests.size,
-    });
+    logger.info('module ready');
 
     return new OfflineSync(
-      interceptor,
-      converter,
-      composed,
       deadLetters,
-      requests,
       errorHandlers,
       db,
       logger,
@@ -177,22 +124,59 @@ export class OfflineSync {
     this.connector.resumeAfterReconnect?.();
   }
 
-  /** The single entry point for every outgoing request. */
-  async interceptRequest(req: HttpRequest): Promise<Response> {
-    return this.interceptor.interceptRequest(req);
+  /**
+   * Perform a write directly: no interception, no `entities.yaml` to
+   * declare. The caller supplies the SQL and what it should become on
+   * replay (method, url, body) -- this module composes nothing here, it
+   * only writes locally, queues for later delivery, and hands back the
+   * written row.
+   *
+   * Replaces an ordinary `fetch()` call at the call site: the application
+   * gets an immediate, local answer, and the real request goes out later
+   * through the same `OfflineSyncConnector`/`uploadData()` path as every
+   * other queued write, conflict/invariant handling included.
+   */
+  async write(input: DirectWriteInput): Promise<Response> {
+    const now = new Date().toISOString();
+
+    return this.db.runInTransaction(async (tx) => {
+      const result = await tx.writeData(input.sql, input.params);
+
+      await enqueue(tx, {
+        id: input.id,
+        method: input.method,
+        path: input.url,
+        ...(input.body !== undefined
+          ? { body: input.body }
+          : input.params !== undefined
+            ? { body: input.params }
+            : {}),
+        now,
+      });
+
+      this.logger.info('local write done (direct), request kept for replay', {
+        method: input.method.toUpperCase(),
+        id: input.id,
+      });
+
+      return { status: 'Success', entity: result.rows[0] ?? null };
+    });
   }
 
   /**
-   * Is this request declared in the operations map?
+   * Read directly against the local database: no interception, no
+   * `entities.yaml` to declare. The caller supplies the SQL, including its
+   * own `AS camelCase` projection -- this module runs it as-is and hands
+   * back the rows, nothing composed or translated.
    *
-   * Call this before interceptRequest when the application has its own HTTP
-   * client (session cookies, custom headers, 401 redirects): a request the
-   * map doesn't know about is still relayed by the module, but through its
-   * own client, which knows none of that.
+   * Replaces an ordinary `fetch()` call at the call site: the application
+   * gets an immediate, local answer instead of going out over the network.
+   * Never queued -- a read has nothing to replay.
    */
-  handles(req: HttpRequest): boolean {
-    if (this.converter.resolve(req) !== undefined) return true;
-    return this.composed?.resolve(req) !== undefined;
+  async read(input: DirectReadInput): Promise<Array<Record<string, SqlValue>> | Record<string, SqlValue> | null> {
+    const rows = await this.db.readData(input.sql, input.params);
+    this.logger.info('local read done (direct)', { rows: rows.length, single: input.single === true });
+    return input.single === true ? (rows[0] ?? null) : rows;
   }
 
   async pendingIssues(): Promise<DeadLetterEntry[]> {

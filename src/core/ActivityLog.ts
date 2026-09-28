@@ -18,7 +18,8 @@ export type ActivityEventType =
   | 'request-failed'
   | 'local-write'
   | 'dead-letter'
-  | 'reauth-required';
+  | 'reauth-required'
+  | 'conflict';
 
 export interface ActivityEvent {
   type: ActivityEventType;

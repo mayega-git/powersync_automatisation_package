@@ -1,5 +1,4 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
-import { connectBridge } from '../pwa/index.js';
 
 // Ce fichier exporte le Provider React du moteur PowerSync.
 // ⚠️ ATTENTION NEXT.JS (App Router) :
@@ -18,8 +17,8 @@ import { connectBridge } from '../pwa/index.js';
 //      // scope defaults to '/' -- do NOT call navigator.serviceWorker.register(url)
 //      // directly with no options: the browser then scopes the worker to the URL's own
 //      // directory (e.g. "/serwist/" for "/serwist/sw.js"), and it will never control
-//      // any other page. connectBridge (used internally below) warns if this happens,
-//      // but registering correctly from the start avoids the failure entirely.
+//      // any other page, so it never caches navigation/assets for it (see
+//      // warnIfNeverControlled).
 //      registerServiceWorker("/serwist/sw.js", { navigator, logger: console });
 //    }, []);
 //    return <OfflineSyncProvider initSync={initSync}>{children}</OfflineSyncProvider>;
@@ -43,15 +42,11 @@ export function OfflineSyncProvider({ children, initSync }: OfflineSyncProviderP
   const [isReady, setIsReady] = useState(false);
 
   useEffect(() => {
-    let bridgeCleanup: (() => void) | undefined;
-    
     let active = true;
     async function startSync() {
       try {
-        const syncInstance = await initSync();
+        await initSync();
         if (!active) return;
-        
-        bridgeCleanup = connectBridge(syncInstance);
         setIsReady(true);
       } catch (e) {
         console.error("Failed to initialize OfflineSync:", e);
@@ -62,7 +57,6 @@ export function OfflineSyncProvider({ children, initSync }: OfflineSyncProviderP
 
     return () => {
       active = false;
-      if (bridgeCleanup) bridgeCleanup();
     };
   }, [initSync]);
 

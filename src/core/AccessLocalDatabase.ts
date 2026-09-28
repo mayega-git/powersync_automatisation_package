@@ -9,7 +9,7 @@ export interface WriteResult {
 }
 
 export interface LocalDatabaseSession {
-  /** Parameters are positional (`?`); see SqlTranslator for the named-to-positional step. */
+  /** Parameters are positional (`?`), same convention throughout the module. */
   readData<T extends SqlRow = SqlRow>(
     sql: string,
     params?: readonly SqlValue[],

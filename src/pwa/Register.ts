@@ -7,9 +7,9 @@
  * the script was served from, not to the whole origin. A worker served from
  * `/serwist/sw.js` with no explicit `scope` therefore only ever controls pages under
  * `/serwist/` -- it registers successfully, `navigator.serviceWorker.controller` stays
- * `null` on every real page, and the bridge this module wires up (`connectBridge`,
- * `bridgeServiceWorker`) is never reached. Offline then fails everywhere, silently:
- * no error, no rejected promise, just every request falling through to the network.
+ * `null` on every real page, and the navigation/asset caching it provides never applies
+ * to them. Offline navigation then fails everywhere, silently: no error, no rejected
+ * promise, just every request falling through to the network.
  *
  * `registerServiceWorker` exists so integrators get the correct default (`scope: '/'`)
  * without having to already know this browser detail.
@@ -77,10 +77,9 @@ export interface WarnIfNeverControlledOptions {
 
 /**
  * Warns once, after a short delay, if the page still has no controlling Service Worker.
- * A registered-but-uncontrolling worker is the single most common reason the bridge this
- * module wires up never gets a chance to answer anything -- and it produces no exception
- * to catch, so without this check it fails silently. Call it once, right after wiring the
- * bridge (`connectBridge` already does this by default).
+ * A registered-but-uncontrolling worker is the single most common reason navigation and
+ * static assets never get cached for a page -- and it produces no exception to catch, so
+ * without this check it fails silently. Call it once, right after registering the worker.
  */
 export function warnIfNeverControlled(options: WarnIfNeverControlledOptions): () => void {
   const timeoutMs = options.timeoutMs ?? 5000;
@@ -88,10 +87,11 @@ export function warnIfNeverControlled(options: WarnIfNeverControlledOptions): ()
     const controller = options.navigator.serviceWorker?.controller;
     if (controller === null || controller === undefined) {
       options.logger?.warn(
-        'offline-sync: no Service Worker controls this page. The bridge will never be ' +
-          'reached -- every request falls through to the network, online or not. Usual ' +
-          'cause: the Service Worker was registered with a scope narrower than the pages ' +
-          "that need it (see registerServiceWorker's `scope` option, default '/').",
+        'offline-sync: no Service Worker controls this page. Navigation and static ' +
+          'assets are never cached for it -- offline navigation fails here, online or ' +
+          'not. Usual cause: the Service Worker was registered with a scope narrower ' +
+          "than the pages that need it (see registerServiceWorker's `scope` option, " +
+          "default '/').",
       );
     }
   }, timeoutMs);

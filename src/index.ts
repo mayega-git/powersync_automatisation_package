@@ -9,57 +9,6 @@ export type {
   WriteResult,
 } from "./core/AccessLocalDatabase.js";
 
-// SQL translation
-export {
-  SqlTranslator,
-  SqlTranslationError,
-  type PositionalSql,
-  type SqlParams,
-} from "./core/SqlTranslator.js";
-
-// Request identification
-export type { HttpRequest } from "./core/HttpRequest.js";
-export type {
-  Connectivity,
-  OfflineMap,
-  OperationMapping,
-} from "./core/OperationMapping.js";
-export {
-  PathMatchIndex,
-  splitPath,
-  type MatchStatus,
-  type PathMatchResult,
-} from "./core/PathMatchIndex.js";
-export { Converter, RELATIVE_BASE, type ResolvedOperation } from "./core/Converter.js";
-export {
-  buildWriteMetadata,
-  serialiseWriteMetadata,
-} from "./core/WriteMetadataBuilder.js";
-
-// Table declaration: which table for which requests
-export {
-  EntityRoutes,
-  EntityRoutesError,
-  type DeclaredPath,
-  type EntitiesDeclaration,
-  type EntityRule,
-  type ResolvedEntity,
-} from "./core/EntityRoutes.js";
-export {
-  SqlBuilder,
-  SqlBuildError,
-  toCamelCase,
-  toSnakeCase,
-  type BuiltStatement,
-  type SqlBuildInput,
-  type SqlKind,
-  type TableColumns,
-} from "./core/SqlBuilder.js";
-export {
-  ComposedOperations,
-  type ComposedOperationsOptions,
-} from "./core/ComposedOperations.js";
-
 // The queue: the original request, kept for every case
 export {
   QUEUE_COLUMNS,
@@ -69,34 +18,15 @@ export {
   enqueue,
   listQueued,
   readQueued,
-  toHttpRequest,
   type EnqueueInput,
   type QueuedRequest,
 } from "./core/PendingQueue.js";
 
-// Handlers assembled by the Interceptor
-export type {
-  Handler,
-  OnlineHandler,
-  Request,
-  Response,
-  ResponseStatus,
-} from "./core/Handler.js";
-export { isOnlineHandler, isRequestHandler } from "./core/Handler.js";
 export type {
   HttpClient,
   HttpClientRequest,
   HttpClientResponse,
 } from "./core/HttpClient.js";
-export {
-  HandlerRegistrationError,
-  RequestRegistry,
-} from "./core/RequestRegistry.js";
-export {
-  DEFAULT_DEDUP_WINDOW_MS,
-  DuplicateGuard,
-  type DuplicateGuardOptions,
-} from "./core/DuplicateGuard.js";
 
 // End-to-end request flow
 export {
@@ -113,11 +43,6 @@ export {
   type ClassifiedErrorKind,
   type StatusClassifier,
 } from "./core/ClassifiedError.js";
-export {
-  HandlerMismatchError,
-  Interceptor,
-  type InterceptorOptions,
-} from "./core/Interceptor.js";
 
 // Default network client
 export {
@@ -163,13 +88,13 @@ export {
 // Facade: the only thing the application builds
 export {
   OfflineSync,
+  type DirectReadInput,
+  type DirectWriteInput,
   type OfflineSyncOptions,
+  type Response,
+  type ResponseStatus,
 } from "./OfflineSync.js";
 export type {
   ConnectorCredentials as SyncCredentials,
   SyncConnectorPort,
 } from "./core/SyncConnectorPort.js";
-export {
-  OfflineMapValidationError,
-  validateOfflineMap,
-} from "./core/validateOfflineMap.js";

@@ -16,8 +16,3 @@ export {
   type PowerSyncCrudSource,
   type PowerSyncCrudTransaction,
 } from "./PowerSyncConnector.js";
-
-export {
-  tableColumnsFromSchema,
-  type PowerSyncSchemaShape,
-} from "./SchemaColumns.js";

@@ -4,7 +4,16 @@ export type ClassifiedErrorKind =
   | 'retry'
   | 'reject'
   /** Session expired while offline: keep the queue intact and ask the user to sign in again. */
-  | 'reauth';
+  | 'reauth'
+  /**
+   * The write reached the server, but the entity it targets moved in the
+   * meantime (a version mismatch, a business-rule rejection tied to a
+   * concurrent change -- never a plain validation error, which stays
+   * `reject`). No built-in rule ever produces this kind: a status only
+   * becomes `conflict` through a host-supplied `classifyStatus`. See
+   * `OfflineSyncConnectorOptions.onConflict`.
+   */
+  | 'conflict';
 
 export class ClassifiedError extends Error {
   readonly kind: ClassifiedErrorKind;

@@ -8,7 +8,6 @@ import {
   type PowerSyncCrudSource,
   type PowerSyncCrudTransaction,
 } from '../src/powersync/PowerSyncConnector.js';
-import { tableColumnsFromSchema } from '../src/powersync/SchemaColumns.js';
 
 function crudTx(
   crud: PowerSyncCrudTransaction['crud'],
@@ -145,26 +144,5 @@ describe('PowerSyncConnector', () => {
       endpoint: 'https://sync.test',
       token: 'token',
     });
-  });
-});
-
-describe('tableColumnsFromSchema', () => {
-  it('adds id, which the engine adds itself to every table', () => {
-    const columns = tableColumnsFromSchema({
-      tables: [{ name: 'tag_entity', columns: [{ name: 'name' }] }],
-    });
-    expect(columns['tag_entity']).toEqual(['id', 'name']);
-  });
-
-  it('adds _metadata only when the table tracks it', () => {
-    const columns = tableColumnsFromSchema({
-      tables: [
-        { name: 'tracked', columns: [{ name: 'a' }], trackMetadata: true },
-        { name: 'untracked', columns: [{ name: 'a' }] },
-      ],
-    });
-    // Without it, no replay would be possible on that table.
-    expect(columns['tracked']).toContain('_metadata');
-    expect(columns['untracked']).not.toContain('_metadata');
   });
 });
