@@ -9,6 +9,7 @@ interface Node {
   literals: Map<string, Node>;
   param?: { name: string; node: Node };
   plans: Map<HttpMethod, EndpointPlan>;
+  ambiguous?: Set<HttpMethod>;
 }
 
 function node(): Node {
@@ -22,6 +23,8 @@ function node(): Node {
  */
 export class EndpointRouter {
   private readonly root = node();
+  /** Routes declared twice with the same shape: never matched, the request goes to the network. */
+  readonly ambiguous: string[] = [];
 
   constructor(plans: readonly EndpointPlan[]) {
     for (const plan of plans) this.add(plan);
@@ -47,8 +50,14 @@ export class EndpointRouter {
         current = next;
       }
     }
-    if (current.plans.has(plan.method)) throw new Error(`Duplicate route ${plan.id}.`);
-    current.plans.set(plan.method, plan);
+    const existing = current.plans.get(plan.method);
+    if (existing === undefined) {
+      current.plans.set(plan.method, plan);
+      return;
+    }
+    this.ambiguous.push(plan.id, existing.id);
+    current.ambiguous ??= new Set();
+    current.ambiguous.add(plan.method);
   }
 
   match(method: string, path: string): RouteMatch | undefined {
@@ -70,6 +79,7 @@ export class EndpointRouter {
   private walk(current: Node, segments: readonly string[], index: number, values: string[], method: HttpMethod):
     { plan: EndpointPlan; values: string[] } | undefined {
     if (index === segments.length) {
+      if (current.ambiguous?.has(method)) return undefined;
       const plan = current.plans.get(method) ?? (method === 'HEAD' ? current.plans.get('GET') : undefined);
       return plan === undefined ? undefined : { plan, values };
     }

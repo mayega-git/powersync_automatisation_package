@@ -67,7 +67,14 @@ export function validateArtifact(value: unknown): asserts value is AerisArtifact
   }
 
   const ids = new Set<string>();
+  const shapes = new Map<string, string>();
   for (const [index, endpoint] of artifact.endpoints.entries()) {
+    if (isRecord(endpoint) && typeof endpoint.path === 'string' && LOCAL_CLASSES.has(endpoint.offlineClass)) {
+      const shape = `${endpoint.method} ${endpoint.path.replace(/\{[^}]*\}/g, '{}')}`;
+      const other = shapes.get(shape);
+      if (other !== undefined) problems.push(`endpoints[${index}]: ${endpoint.id} has the same route shape as ${other}`);
+      shapes.set(shape, endpoint.id);
+    }
     const where = `endpoints[${index}]`;
     if (!isRecord(endpoint)) {
       problems.push(`${where} is not an object`);

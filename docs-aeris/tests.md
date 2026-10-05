@@ -37,3 +37,23 @@ Résultat obtenu sur la copie du backend : réponses identiques (corps compris) 
 les lectures de points de vente sur données réelles, y compris le `404` sur un
 identifiant inconnu. Les autres modules exigent un jeton utilisateur avec permissions
 pour être comparés.
+
+## Démonstration de bout en bout sur le backend réel
+
+`example/aeris-real-backend-demo.ts` démarre une Gateway sur la base du backend, un
+runtime (SQLite) et déroule : lecture locale hors ligne, création et renommage hors
+ligne (réponses `201`/`200` provisoires), endpoint en ligne obligatoire bloqué (`503`),
+retour du réseau, rejeu via la Gateway avec `Idempotency-Key`, remapping de
+l'identifiant local vers l'identifiant serveur, convergence de la ligne locale sur la
+ligne canonique (horodatages serveur compris), outbox vide.
+
+```bash
+AERIS_GATEWAY_CONFIG=gateway.yaml AERIS_PUBLIC_KEY=… AERIS_KEY_ID=… \
+AERIS_HEADERS='{"x-api-key":"…","x-client-id":"…","x-tenant-id":"…","x-organization-id":"…"}' \
+AERIS_CLAIMS='{"tenantId":"…","organizationId":"…"}' \
+npx tsx example/aeris-real-backend-demo.ts
+```
+
+Résultat obtenu sur la copie Docker du backend `iwm-backend` : la ligne
+« Kiosque renommé hors ligne » créée hors ligne existe en base avec l'identifiant
+attribué par le serveur, et la projection locale ne contient plus l'identifiant local.

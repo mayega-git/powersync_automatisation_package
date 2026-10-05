@@ -159,16 +159,30 @@ export function joinPath(base: string, path: string): string {
   return joined.length > 1 && joined.endsWith('/') ? joined.slice(0, -1) : joined;
 }
 
+/** Route shape: variable names do not matter to the router (Spring treats /x/{a} and /x/{b} as the same). */
+export function routeShape(method: string, path: string): string {
+  return `${method} ${path.replace(/\{[^}]*\}/g, '{}')}`;
+}
+
 function deduplicate(drafts: EndpointDraft[], diagnostics: string[]): EndpointDraft[] {
   const byId = new Map<string, EndpointDraft>();
+  const byShape = new Map<string, EndpointDraft[]>();
   for (const draft of drafts) {
     const existing = byId.get(draft.id);
-    if (existing === undefined) {
-      byId.set(draft.id, draft);
-      continue;
+    if (existing === undefined) byId.set(draft.id, draft);
+    else {
+      diagnostics.push(`${draft.id} is mapped by ${existing.handler.symbol} and ${draft.handler.symbol}.`);
+      byId.set(draft.id, { ...existing, program: undefined, unsupported: 'Several handlers map the same route.' });
     }
-    diagnostics.push(`${draft.id} is mapped by ${existing.handler.symbol} and ${draft.handler.symbol}.`);
-    byId.set(draft.id, { ...existing, program: undefined, unsupported: 'Several handlers map the same route.' });
+  }
+  for (const draft of byId.values()) {
+    const shape = routeShape(draft.method, draft.path);
+    byShape.set(shape, [...(byShape.get(shape) ?? []), draft]);
+  }
+  for (const group of byShape.values()) {
+    if (group.length < 2) continue;
+    diagnostics.push(`Ambiguous mappings: ${group.map((draft) => `${draft.id} (${draft.handler.symbol})`).join(', ')}.`);
+    for (const draft of group) byId.set(draft.id, { ...draft, program: undefined, unsupported: 'Ambiguous mapping: another handler matches the same requests.' });
   }
   return [...byId.values()];
 }

@@ -1466,6 +1466,11 @@ export class Evaluator {
       return this.inline(method, method.modifiers.has('static') ? undefined : target, args, node, scope);
     }
     if (name === 'equals' && args.length === 1) this.fail(`${decl.simple}.equals() relies on identity or generated equality`, node, scope);
+    // The configured Authentication is a verified session: Spring's inherited accessors are known.
+    if (decl.fqn === this.config.context.authentication && args.length === 0) {
+      if (name === 'isAuthenticated') return pure(TRUE, T.boolean);
+      if (name === 'getAuthorities') return { t: 'list', e: { k: 'ctx', name: 'authorities' }, elem: T.string, element: (item) => pure(item, T.string) };
+    }
     this.fail(`No method ${decl.simple}.${name}/${args.length}`, node, scope);
   }
 
