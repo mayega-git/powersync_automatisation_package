@@ -1,25 +1,36 @@
-export { AERISCompileError, classifyEndpoint, compileAnalysis } from './compile.js';
-export { compileProject, type ProjectCompileOptions, type ProjectCompileResult } from './ProjectCompiler.js';
-export type { CompilerAdapter, SourceFile } from './CompilerAdapter.js';
-export { SpringBootAdapter } from './SpringBootAdapter.js';
-export { signAERISArtifact, verifyAERISArtifact } from './signature.js';
+/**
+ * AERIS browser runtime and IR (browser-safe: WebCrypto only, no Node APIs).
+ * Build-time compiler: `@ksm/offline-sync/aeris/compiler`; server: `@ksm/offline-sync/aeris/gateway`.
+ */
+export * from './ir/types.js';
+export { AerisValidationError, validateArtifact } from './ir/validate.js';
+export { canonicalJson, canonicalDigest, sha256Hex, jsonEqual } from './ir/canonical.js';
+export { AerisSignatureError, importPrivateKeyPem, importPublicKey, signArtifact, verifyArtifact } from './ir/signing.js';
+export * from './protocol.js';
+export { AerisRuntime, AERIS_RUNTIME_VERSION, readyOperations, type AerisRuntimeOptions, type RuntimeEvent, type SessionProvider } from './runtime/runtime.js';
 export {
-  AERIS_IR_VERSION,
-  type AERISArtifact,
-  type AERISSignedArtifact,
-  type AdapterAnalysis,
-  type AdapterIdentity,
-  type BehaviorFilter,
-  type BehaviorInstruction,
-  type BehaviorPlan,
-  type BehaviorValue,
-  type CallSite,
-  type CompiledEndpoint,
-  type DataAccess,
-  type EndpointFacts,
-  type EvidenceKind,
-  type HttpMethod,
-  type OfflinePolicy,
-  type ReplaySemantics,
-  type SourceEvidence,
-} from './types.js';
+  AerisExecutionError,
+  AerisHttpError,
+  Executor,
+  type Captured,
+  type Effect,
+  type ExecutionRequest,
+  type ExecutionResult,
+} from './runtime/executor.js';
+export { EndpointRouter, type RouteMatch } from './runtime/router.js';
+export { compareResults, type ComparisonResult } from './runtime/compare.js';
+export { HttpTransport, TransportError, type AerisTransport, type HttpTransportOptions, type RuntimeRequest, type RuntimeResponse } from './runtime/transport.js';
+export type { OperationState, OutboxEntry } from './runtime/outbox.js';
+export {
+  DuplicateKeyError,
+  UnknownEntityError,
+  type LocalStore,
+  type StoreTx,
+  type StoredRow,
+  type ResolvedFilter,
+} from './runtime/store/LocalStore.js';
+export { MemoryStore } from './runtime/store/MemoryStore.js';
+export { SqlStore } from './runtime/store/SqlStore.js';
+export { IndexedDbStore } from './runtime/store/IndexedDbStore.js';
+export { BetterSqliteDatabase, type BetterSqliteLike } from './runtime/store/BetterSqliteDatabase.js';
+export { castValue, formatNow, valuesEqual, compareValues } from './runtime/values.js';

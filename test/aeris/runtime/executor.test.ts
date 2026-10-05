@@ -100,7 +100,8 @@ describe('value semantics', () => {
 
   it('formats the captured clock like Jackson java.time serializers', () => {
     const instant = Date.parse('2026-10-05T18:58:28.200Z');
-    expect(formatNow(instant, 'datetime', 'UTC')).toBe('2026-10-05T18:58:28.2Z');
+    expect(formatNow(instant, 'datetime', 'UTC')).toBe('2026-10-05T18:58:28.200Z');
+    expect(formatNow(Date.parse('2026-10-05T18:58:28Z'), 'datetime', 'UTC')).toBe('2026-10-05T18:58:28Z');
     expect(formatNow(instant, 'datetime-local', 'Africa/Douala')).toBe('2026-10-05T19:58:28.2');
     expect(formatNow(Date.parse('2026-10-05T23:30:00Z'), 'date', 'Africa/Douala')).toBe('2026-10-06');
   });

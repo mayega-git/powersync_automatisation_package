@@ -14,8 +14,12 @@ import {
   compareValues,
   decimalAdd,
   decimalMul,
+  decimalDivide,
+  decimalSetScale,
   decimalSub,
   formatNow,
+  javaStrip,
+  type RoundingMode,
   normalizeStored,
   valuesEqual,
 } from './values.js';
@@ -62,6 +66,8 @@ export class AerisHttpError extends Error {
     readonly status: number,
     readonly code: string,
     message: string,
+    /** Exact error body when the artifact carries the backend's handler shape. */
+    readonly body?: JsonValue,
   ) {
     super(message);
     this.name = 'AerisHttpError';
@@ -227,7 +233,9 @@ class Frame {
       case 'ASSERT':
         if (!truthy(this.eval(instr.test))) {
           const message = this.eval(instr.error.message);
-          throw new AerisHttpError(instr.error.status, instr.error.code, typeof message === 'string' ? message : JSON.stringify(message));
+          const text = typeof message === 'string' ? message : JSON.stringify(message);
+          const body = instr.error.body === undefined ? undefined : this.eval(instr.error.body, new Map([['$message', text]]));
+          throw new AerisHttpError(instr.error.status, instr.error.code, text, body);
         }
         return undefined;
       case 'IF':
@@ -398,6 +406,61 @@ class Frame {
         }
         return out;
       }
+      case 'fold': {
+        const source = this.eval(expr.of, scope);
+        if (source === null) throw new AerisHttpError(500, 'NULL_DEREFERENCE', 'Cannot iterate over null.');
+        if (!Array.isArray(source)) throw new AerisExecutionError('fold over a non-list value.');
+        const inner = new Map(scope ?? []);
+        let acc = this.eval(expr.init, scope);
+        for (const item of source) {
+          inner.set(expr.as, item);
+          inner.set(expr.acc, acc);
+          acc = this.eval(expr.body, inner);
+        }
+        return acc;
+      }
+      case 'try': {
+        try {
+          return this.eval(expr.body, scope);
+        } catch (error) {
+          if (!(error instanceof AerisHttpError)) throw error;
+          if (expr.catches === 'cast' && error.code !== 'INVALID_VALUE') throw error;
+          return this.eval(expr.fallback, scope);
+        }
+      }
+      case 'sort': {
+        const source = this.eval(expr.of, scope);
+        if (source === null) throw new AerisHttpError(500, 'NULL_DEREFERENCE', 'Cannot sort null.');
+        if (!Array.isArray(source)) throw new AerisExecutionError('sort over a non-list value.');
+        const inner = new Map(scope ?? []);
+        const keyed = source.map((item, index) => {
+          inner.set(expr.as, item);
+          const keys = expr.keys.map((key) => {
+            const value = this.eval(key.key, inner);
+            if (value === null && key.nulls === 'error') throw new AerisHttpError(500, 'NULL_DEREFERENCE', 'Comparator key is null.');
+            return value;
+          });
+          return { item, index, keys };
+        });
+        keyed.sort((left, right) => {
+          for (const [position, spec] of expr.keys.entries()) {
+            const a = left.keys[position]!;
+            const b = right.keys[position]!;
+            let order: number;
+            if (a === null || b === null) {
+              order = a === b ? 0 : (a === null) === (spec.nulls === 'first') ? -1 : 1;
+              if (order !== 0) return order;
+              continue;
+            }
+            const compared = compareValues(a, b);
+            if (compared === null) throw new AerisExecutionError('Incomparable sort keys.');
+            order = spec.desc ? -compared : compared;
+            if (order !== 0) return order;
+          }
+          return left.index - right.index;
+        });
+        return keyed.map((entry) => entry.item);
+      }
       case 'cast': {
         const value = this.eval(expr.of, scope);
         try {
@@ -482,13 +545,14 @@ class Frame {
       case 'upper':
         return str(a).toUpperCase();
       case 'trim':
-        return str(a).replace(/^[\u0000- ]+|[\u0000- ]+$/g, '');
+        return javaTrim(str(a));
       case 'length':
         return str(a).length;
       case 'isEmpty':
         return Array.isArray(a) ? a.length === 0 : str(a).length === 0;
       case 'isBlank':
-        return a === null ? true : str(a).trim().length === 0;
+        // Hibernate Validator @NotBlank: String.trim() strips code points <= U+0020.
+        return a === null ? true : javaTrim(str(a)).length === 0;
       case 'startsWith':
         return str(a).startsWith(str(b));
       case 'endsWith':
@@ -498,6 +562,43 @@ class Frame {
       case 'size':
         if (!Array.isArray(a)) throw new AerisHttpError(500, 'NULL_DEREFERENCE', 'size() of a non-list value.');
         return a.length;
+      case 'append': {
+        if (!Array.isArray(a)) throw new AerisHttpError(500, 'NULL_DEREFERENCE', 'add() on a non-list value.');
+        return [...a, b];
+      }
+      case 'take': {
+        if (!Array.isArray(a)) throw new AerisHttpError(500, 'NULL_DEREFERENCE', 'take() of a non-list value.');
+        return a.slice(0, Math.max(0, num(b)));
+      }
+      case 'strip':
+        return javaStrip(str(a));
+      case 'setScale': {
+        const mode = str(values[2] ?? null) as RoundingMode;
+        try {
+          return decimalSetScale(num(a), num(b), mode);
+        } catch (error) {
+          throw new AerisHttpError(500, 'ARITHMETIC', (error as Error).message);
+        }
+      }
+      case 'divide': {
+        const mode = str(values[3] ?? null) as RoundingMode;
+        try {
+          return decimalDivide(num(a), num(b), num(values[2] ?? null), mode);
+        } catch (error) {
+          throw new AerisHttpError(500, 'ARITHMETIC', (error as Error).message);
+        }
+      }
+      case 'first':
+        if (!Array.isArray(a)) throw new AerisHttpError(500, 'NULL_DEREFERENCE', 'first() of a non-list value.');
+        return a[0] ?? null;
+      case 'replace': {
+        const target = str(b);
+        const replacement = str(values[2] ?? null);
+        const subject = str(a);
+        // Java: an empty target inserts the replacement around every char.
+        if (target.length === 0) return replacement + [...subject].join(replacement) + (subject.length > 0 ? replacement : '');
+        return subject.split(target).join(replacement);
+      }
       default:
         throw new AerisExecutionError(`Unknown operator ${expr.op}.`);
     }
@@ -529,10 +630,15 @@ function str(value: JsonValue): string {
   return value;
 }
 
-/** String.valueOf semantics for concatenation. */
+function javaTrim(text: string): string {
+  return text.replace(/^[\u0000-\u0020]+|[\u0000-\u0020]+$/g, '');
+}
+
+/** String.valueOf semantics for concatenation (collections as AbstractCollection.toString()). */
 function javaString(value: JsonValue): string {
   if (value === null) return 'null';
   if (typeof value === 'string') return value;
   if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  if (Array.isArray(value)) return `[${value.map(javaString).join(', ')}]`;
   return JSON.stringify(value);
 }

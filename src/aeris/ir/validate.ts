@@ -256,7 +256,9 @@ function validateBlock(block: readonly Instr[], scope: Set<string>, state: Progr
   for (const [index, instr] of block.entries()) {
     const terminal = validateInstr(instr, scope, state, depth);
     if (terminal) {
-      if (index !== block.length - 1) state.problems.push(`${state.where}: unreachable instructions after RETURN`);
+      const trailing = block.slice(index + 1);
+      // Placeholders after a throw are harmless; anything else is dead code.
+      if (trailing.some((next) => next.op !== 'LET')) state.problems.push(`${state.where}: unreachable instructions after the end of a path`);
       return true;
     }
   }
@@ -288,13 +290,20 @@ function validateInstr(instr: Instr, scope: Set<string>, state: ProgramState, de
       validateExpr(instr.expr, scope, state, depth);
       define(instr.out, scope, state);
       return false;
-    case 'ASSERT':
+    case 'ASSERT': {
       validateExpr(instr.test, scope, state, depth);
       validateExpr(instr.error?.message, scope, state, depth);
+      if (instr.error?.body !== undefined) {
+        const inner = new Set(scope);
+        inner.add('$message');
+        validateExpr(instr.error.body, inner, state, depth);
+      }
       if (!(Number.isSafeInteger(instr.error?.status) && instr.error.status >= 400 && instr.error.status <= 599)) {
         problems.push(`${where}: ASSERT error status must be 4xx or 5xx`);
       }
-      return false;
+      // ASSERT(false) always aborts (a Java throw): the path ends here.
+      return instr.test.k === 'lit' && instr.test.v === false;
+    }
     case 'IF': {
       validateExpr(instr.test, scope, state, depth);
       const thenScope = new Set(scope);
@@ -341,8 +350,8 @@ function validateInstr(instr: Instr, scope: Set<string>, state: ProgramState, de
       state.queued = true;
       return false;
     case 'RETURN':
-      if (!(Number.isSafeInteger(instr.status) && instr.status >= 200 && instr.status <= 299)) {
-        problems.push(`${where}: RETURN status must be 2xx`);
+      if (!(Number.isSafeInteger(instr.status) && instr.status >= 200 && instr.status <= 499)) {
+        problems.push(`${where}: RETURN status must be 2xx-4xx`);
       }
       if (instr.body !== null) validateExpr(instr.body, scope, state, depth);
       return true;
@@ -436,6 +445,33 @@ function validateExpr(expr: Expr | undefined, scope: ReadonlySet<string>, state:
       const inner = new Set(scope);
       inner.add(expr.as);
       validateExpr(expr.body, inner, state, next);
+      return;
+    }
+    case 'fold': {
+      validateExpr(expr.of, scope, state, next);
+      validateExpr(expr.init, scope, state, next);
+      if (!IDENTIFIER.test(expr.as) || !IDENTIFIER.test(expr.acc) || expr.as === expr.acc) problems.push(`${where}: invalid fold bindings`);
+      const inner = new Set(scope);
+      inner.add(expr.as);
+      inner.add(expr.acc);
+      validateExpr(expr.body, inner, state, next);
+      return;
+    }
+    case 'try':
+      if (expr.catches !== 'cast' && expr.catches !== 'any') problems.push(`${where}: invalid try catches`);
+      validateExpr(expr.body, scope, state, next);
+      validateExpr(expr.fallback, scope, state, next);
+      return;
+    case 'sort': {
+      validateExpr(expr.of, scope, state, next);
+      if (!IDENTIFIER.test(expr.as)) problems.push(`${where}: invalid binding name`);
+      if (!Array.isArray(expr.keys) || expr.keys.length === 0) problems.push(`${where}: sort needs at least one key`);
+      const inner = new Set(scope);
+      inner.add(expr.as);
+      for (const key of expr.keys ?? []) {
+        if (!['first', 'last', 'error'].includes(key.nulls) || typeof key.desc !== 'boolean') problems.push(`${where}: malformed sort key`);
+        validateExpr(key.key, inner, state, next);
+      }
       return;
     }
     case 'cast':

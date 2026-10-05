@@ -55,8 +55,9 @@
   "author": "KSM",
   "license": "UNLICENSED",
   "dependencies": {
-    "java-parser": "^3.0.1",
+    "jose": "^6.2.12",
     "js-yaml": "^4.3.2",
+    "pg": "^8.23.1",
     "picocolors": "^1.1.1",
     "tree-sitter-java": "^0.23.5",
     "web-tree-sitter": "^0.25.10"
@@ -70,6 +71,7 @@
     "@powersync/common": "^2.1.0",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^20.11.0",
+    "@types/pg": "^8.23.1",
     "@types/react": "^18.2.0",
     "better-sqlite3": "^11.0.0",
     "fake-indexeddb": "^6.2.5",

@@ -85,14 +85,27 @@ export type ExprOp =
   | 'lower' | 'upper' | 'trim' | 'length' | 'isBlank' | 'isEmpty'
   | 'startsWith' | 'endsWith' | 'contains'
   | 'min' | 'max' | 'abs'
-  | 'size';
+  | 'size' | 'first' | 'replace'
+  | 'take' | 'strip' | 'setScale' | 'divide' | 'append';
 
 export const EXPR_OPS: readonly ExprOp[] = [
   'eq', 'ne', 'lt', 'le', 'gt', 'ge', 'and', 'or', 'not', 'isNull', 'notNull',
   'add', 'sub', 'mul', 'div', 'neg', 'mod', 'concat', 'coalesce',
   'lower', 'upper', 'trim', 'length', 'isBlank', 'isEmpty',
-  'startsWith', 'endsWith', 'contains', 'min', 'max', 'abs', 'size',
+  'startsWith', 'endsWith', 'contains', 'min', 'max', 'abs', 'size', 'first', 'replace',
+  'take', 'strip', 'setScale', 'divide', 'append',
 ];
+
+/** java.math.RoundingMode names accepted by setScale / divide (as string literals). */
+export const ROUNDING_MODES = ['UP', 'DOWN', 'CEILING', 'FLOOR', 'HALF_UP', 'HALF_DOWN', 'HALF_EVEN', 'UNNECESSARY'] as const;
+
+export interface SortKey {
+  /** Key extracted from the element bound by the enclosing sort's `as`. */
+  key: Expr;
+  desc: boolean;
+  /** Placement of null keys; `error` = Comparator.comparing semantics (NullPointerException). */
+  nulls: 'first' | 'last' | 'error';
+}
 
 export type Expr =
   /** A JSON literal. */
@@ -121,6 +134,19 @@ export type Expr =
   /** Pure list transformations; `as` binds each element as a variable. */
   | { k: 'map'; of: Expr; as: string; body: Expr }
   | { k: 'filter'; of: Expr; as: string; body: Expr }
+  /**
+   * Left fold, the IR form of a side-effect-free Java loop: `acc` starts at
+   * `init`, and `body` (with `as` bound to the element) computes the next acc.
+   */
+  | { k: 'fold'; of: Expr; as: string; acc: string; init: Expr; body: Expr }
+  /** Stable sort (Java List.sort / Flux.sort semantics). */
+  | { k: 'sort'; of: Expr; as: string; keys: readonly SortKey[] }
+  /**
+   * Java try/catch over a pure computation: `fallback` replaces `body` when
+   * evaluating it fails with a conversion error (`cast`, i.e.
+   * IllegalArgumentException and subclasses) or with any error (`any`).
+   */
+  | { k: 'try'; body: Expr; catches: 'cast' | 'any'; fallback: Expr }
   /** Conversion with validation; a failed conversion aborts with 400. */
   | { k: 'cast'; to: ScalarType; of: Expr; values?: readonly string[] };
 
@@ -150,6 +176,11 @@ export interface ErrorSpec {
   /** Stable machine code, e.g. NOT_FOUND or VALIDATION. */
   code: string;
   message: Expr;
+  /**
+   * Error body as the backend's exception handler builds it; `$message` is
+   * bound to the evaluated message. Absent: the runtime's default error body.
+   */
+  body?: Expr;
 }
 
 export type Instr =
@@ -179,7 +210,7 @@ export type Instr =
   | { op: 'EMIT_LOCAL_EVENT'; name: string; payload: Expr }
   /** Journals the server intention in the outbox, in the same transaction. */
   | { op: 'QUEUE_INTENT' }
-  /** Ends the program. `body` null = empty response body. */
+  /** Ends the program (2xx, or a business 4xx built without an exception). `body` null = empty body. */
   | { op: 'RETURN'; status: number; body: Expr | null };
 
 // ---------------------------------------------------------------------------
@@ -240,6 +271,12 @@ export interface AuthRequirement {
   context: readonly string[];
   /** Roles/authorities, checked locally against cached claims and again by the server. */
   anyAuthority?: readonly string[];
+  /**
+   * Authorization expressions of the backend (e.g. Spring @PreAuthorize SpEL),
+   * evaluated offline by the application's authorizer on cached claims. The
+   * server re-evaluates them on every replay.
+   */
+  policies?: readonly string[];
 }
 
 export interface InputSpec {

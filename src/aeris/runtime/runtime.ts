@@ -45,6 +45,7 @@ import { EndpointRouter } from './router.js';
 import type { LocalStore, StoredRow, StoreTx } from './store/LocalStore.js';
 import { TransportError, type AerisTransport, type RuntimeRequest, type RuntimeResponse } from './transport.js';
 import { randomUuid } from './values.js';
+import { evaluatePolicy, type PolicyBeans } from './policy.js';
 
 export const AERIS_RUNTIME_VERSION = '1.0.0';
 
@@ -85,6 +86,14 @@ export interface AerisRuntimeOptions {
   clock?: () => number;
   random?: () => number;
   uuid?: () => string;
+  /**
+   * Implementations of the backend's authorization beans (@bean.method(...) in
+   * @PreAuthorize). Without them, endpoints guarded by such policies stay
+   * online-only: offline execution never grants what cannot be checked.
+   */
+  policyBeans?: PolicyBeans;
+  /** Full override of offline authorization decisions (undefined = cannot decide). */
+  authorize?: (policy: string, claims: Readonly<Record<string, JsonValue>>) => boolean | undefined;
   /** Web Locks implementation, defaults to navigator.locks when present. */
   locks?: LockManager;
   name?: string;
@@ -387,6 +396,11 @@ export class AerisRuntime {
     for (const claim of plan.auth.context) {
       if (context?.[claim] === undefined || context[claim] === null) return this.blocked(plan, `Session claim ${claim} is missing.`);
     }
+    for (const policy of plan.auth.policies ?? []) {
+      const decision = this.options.authorize?.(policy, context ?? {}) ?? evaluatePolicy(policy, context ?? {}, this.options.policyBeans);
+      if (decision === undefined) return this.blocked(plan, `Authorization ${policy} cannot be checked offline.`);
+      if (!decision) return this.errorResponse(403, 'ACCESS_DENIED', 'Access denied.', request.url);
+    }
     if (plan.auth.anyAuthority !== undefined && plan.auth.anyAuthority.length > 0) {
       const granted = toStringList(context?.authorities ?? context?.roles);
       if (!plan.auth.anyAuthority.some((authority) => granted.includes(authority))) {
@@ -435,7 +449,16 @@ export class AerisRuntime {
         body: result.body === null ? null : JSON.stringify(result.body),
       };
     } catch (error) {
-      if (error instanceof AerisHttpError) return this.errorResponse(error.status, error.code, error.message, request.url);
+      if (error instanceof AerisHttpError) {
+        if (error.body !== undefined) {
+          return {
+            status: error.status,
+            headers: { ...JSON_HEADERS, [STATE_HEADER.toLowerCase()]: 'local' },
+            body: JSON.stringify(error.body),
+          };
+        }
+        return this.errorResponse(error.status, error.code, error.message, request.url);
+      }
       throw error;
     }
   }
@@ -686,21 +709,25 @@ export class AerisRuntime {
    */
   private async rebase(tx: StoreTx, applyServer: () => Promise<void>, drop: ReadonlyMap<string, Receipt> = new Map()): Promise<void> {
     const entries = (await tx.outboxList()).map(fromRecord);
-    const applied = entries.filter((entry) => PENDING_STATES.has(entry.state) || drop.has(entry.operationId));
+    // Every operation whose effects are currently applied: pending, committed but not yet
+    // covered by a delta, and the ones being dropped now.
+    const applied = entries.filter((entry) => PENDING_STATES.has(entry.state) || entry.state === 'SERVER_COMMITTED' || drop.has(entry.operationId));
     for (const entry of [...applied].reverse()) await this.undo(tx, entry.effects);
 
     await applyServer();
 
     const cursor = await tx.metaGet(META.cursor);
-    for (const entry of entries) {
-      if (entry.state === 'SERVER_COMMITTED' && entry.serverCursor !== undefined && typeof cursor === 'string' &&
-        compareCursors(entry.serverCursor, cursor) <= 0) {
-        await tx.outboxDelete(entry.operationId);
-      }
-    }
-
     const failed = new Set<string>();
     for (const entry of applied) {
+      if (entry.state === 'SERVER_COMMITTED') {
+        // Committed: the server state will contain it once the cursor passes its receipt.
+        if (entry.serverCursor !== undefined && typeof cursor === 'string' && compareCursors(entry.serverCursor, cursor) <= 0) {
+          await tx.outboxDelete(entry.operationId);
+        } else {
+          await this.reapply(tx, entry.effects);
+        }
+        continue;
+      }
       const receipt = drop.get(entry.operationId);
       if (receipt !== undefined) {
         const state: OperationState = receipt.status === 'CONFLICT' ? 'CONFLICT' : 'REJECTED';
@@ -757,6 +784,14 @@ export class AerisRuntime {
       this.deferEmit({ type: 'operation', operationId, endpointId: entry.endpointId, state: after.state, ...(after.error ? { error: after.error } : {}) });
       if (after.state === 'CONFLICT') this.metrics.conflicts += 1;
       else this.metrics.rejections += 1;
+    }
+  }
+
+  /** Re-applies recorded effects (after images) of a committed operation. */
+  private async reapply(tx: StoreTx, effects: readonly Effect[]): Promise<void> {
+    for (const effect of effects) {
+      if (effect.op === 'delete') await tx.delete(effect.entity, effect.key);
+      else if (effect.after !== null) await tx.put(effect.entity, effect.after);
     }
   }
 

@@ -1,0 +1,411 @@
+import type { Expr, Instr } from '../../ir/types.js';
+import type { JType } from '../java/model.js';
+import type { SyntaxNode } from '../java/parser.js';
+import { attempt, branch, mergeEmission } from './branching.js';
+import { sortExpr } from './library.js';
+import type { Evaluator, Scope } from './evaluator.js';
+import {
+  cond,
+  FALSE,
+  isLit,
+  lit,
+  not,
+  op,
+  or,
+  pure,
+  T,
+  TRUE,
+  Unsupported,
+  VOID,
+  vr,
+  type Block,
+  type Emission,
+  type FluxSV,
+  type MonoSV,
+  type SV,
+} from './sv.js';
+
+const IDENTITY_OPERATORS = new Set([
+  'contextWrite', 'subscribeOn', 'publishOn', 'timeout', 'cache', 'retry', 'retryWhen', 'share', 'hide',
+  'onTerminateDetach', 'log', 'name', 'tag', 'checkpoint', 'metrics', 'cancelOn', 'cast',
+]);
+
+const SIDE_CHANNEL_OPERATORS = new Set([
+  'doOnNext', 'doOnSuccess', 'doOnError', 'doOnSubscribe', 'doFinally', 'doOnTerminate', 'doAfterTerminate',
+  'doOnCancel', 'doOnEach', 'doOnRequest', 'doOnComplete', 'doOnDiscard',
+]);
+
+const ERROR_HANDLERS = new Set(['onErrorComplete', 'onErrorResume', 'onErrorReturn', 'onErrorMap', 'onErrorContinue', 'onErrorStop']);
+
+/** Instructions that can fail at run time (an error handler would change their outcome). */
+function fallible(instrs: readonly Instr[]): boolean {
+  return instrs.some((instr) => {
+    if (instr.op === 'LET' || instr.op === 'EMIT_LOCAL_EVENT' || instr.op === 'QUEUE_INTENT') return false;
+    if (instr.op === 'IF') return fallible(instr.then) || fallible(instr.else);
+    return true;
+  });
+}
+
+function mono(elem: JType, run: (block: Block) => Emission): MonoSV {
+  return { t: 'mono', elem, run };
+}
+
+/** Runs `onValue` only when the emission is not empty, keeping the emptiness. */
+function whenPresent(ev: Evaluator, block: Block, source: Emission, onValue: (child: Block) => Emission): Emission {
+  if (isLit(source.empty, true)) return { value: VOID, empty: TRUE };
+  if (isLit(source.empty, false)) return onValue(block);
+  return branch(
+    block,
+    not(source.empty),
+    onValue,
+    () => ({ value: VOID, empty: TRUE }),
+    (test, a, b) => mergeEmission(test, a, b, (t, x, y) => ev.merge(t, x, y)),
+  );
+}
+
+function elemOf(sv: SV): JType {
+  switch (sv.t) {
+    case 'pure': return sv.jt;
+    case 'obj': return { name: sv.cls, args: [], array: 0 };
+    case 'list': return T.list(sv.elem);
+    default: return T.object;
+  }
+}
+
+/** Evaluates a function that must not emit instructions (per-element or side-channel lambdas). */
+function pureApply(ev: Evaluator, fn: SV, args: SV[], block: Block, node: SyntaxNode, scope: Scope, what: string): SV {
+  const probe = attempt(block, (child) => ev.apply(fn, args, child, node, scope));
+  if (!probe.outcome.ok) throw new Unsupported(`${what} can throw for some elements`, node);
+  if (probe.instrs.length > 0) throw new Unsupported(`${what} has side effects per element`, node);
+  return probe.outcome.value;
+}
+
+/**
+ * Per-element mapping whose only effects are checks (domain invariants that
+ * throw): the checks are hoisted into one list-level ASSERT, which fails with
+ * the same error as the first failing element would.
+ */
+export function mapElements(ev: Evaluator, fn: SV, list: Expr, as: string, element: SV, block: Block, node: SyntaxNode, scope: Scope, what: string): SV {
+  const probe = attempt(block, (child) => ev.apply(fn, [element], child, node, scope));
+  if (!probe.outcome.ok) throw new Unsupported(`${what} always throws for an element`, node);
+  for (const instr of probe.instrs) {
+    if (instr.op !== 'ASSERT') throw new Unsupported(`${what} has side effects per element`, node);
+    const failing: Expr = { k: 'filter', of: list, as, body: not(instr.test) };
+    block.emit({
+      op: 'ASSERT',
+      test: op('isEmpty', failing),
+      error: { ...instr.error, message: op('first', { k: 'map', of: failing, as, body: instr.error.message }) },
+    });
+  }
+  return probe.outcome.value;
+}
+
+export function reactiveCall(ev: Evaluator, receiver: MonoSV | FluxSV, name: string, args: SV[], node: SyntaxNode, scope: Scope): SV {
+  if (IDENTITY_OPERATORS.has(name)) return receiver;
+  if (name === 'as' && args.length === 1) return ev.apply(args[0]!, [receiver], scope.block, node, scope);
+  if (SIDE_CHANNEL_OPERATORS.has(name)) return sideChannel(ev, receiver, args, node, scope, name);
+  if (ERROR_HANDLERS.has(name)) return errorHandler(ev, receiver, node, name);
+  return receiver.t === 'mono' ? monoCall(ev, receiver, name, args, node, scope) : fluxCall(ev, receiver, name, args, node, scope);
+}
+
+function sideChannel(ev: Evaluator, receiver: MonoSV | FluxSV, args: SV[], node: SyntaxNode, scope: Scope, name: string): SV {
+  const fn = args.at(-1);
+  if (receiver.t === 'mono') {
+    return mono(receiver.elem, (block) => {
+      const emission = receiver.run(block);
+      if (fn !== undefined && (fn.t === 'lambda' || fn.t === 'mref')) {
+        const arity = fn.t === 'lambda' ? fn.params.length : 1;
+        const sample = arity === 0 ? [] : [name === 'doOnError' ? { t: 'exception', cls: 'java.lang.Throwable', message: lit(null) } as SV : emission.value];
+        const probe = attempt(block, (child) => ev.apply(fn, sample.slice(0, arity), child, node, scope));
+        if (!probe.outcome.ok || probe.instrs.length > 0) throw new Unsupported(`${name}() callback has effects beyond logging`, node);
+      }
+      return emission;
+    });
+  }
+  return receiver;
+}
+
+function errorHandler(ev: Evaluator, receiver: MonoSV | FluxSV, node: SyntaxNode, name: string): SV {
+  if (receiver.t === 'mono') {
+    return mono(receiver.elem, (block) => {
+      const probe = attempt(block, (child) => receiver.run(child));
+      if (!probe.outcome.ok || fallible(probe.instrs)) throw new Unsupported(`${name}() changes the outcome of a failing operation`, node);
+      for (const instr of probe.instrs) block.emit(instr);
+      return probe.outcome.value;
+    });
+  }
+  return {
+    t: 'flux',
+    elem: receiver.elem,
+    run: (block) => {
+      const probe = attempt(block, (child) => receiver.run(child));
+      if (!probe.outcome.ok || fallible(probe.instrs)) throw new Unsupported(`${name}() changes the outcome of a failing operation`, node);
+      for (const instr of probe.instrs) block.emit(instr);
+      return probe.outcome.value;
+    },
+  };
+  void ev;
+}
+
+function monoCall(ev: Evaluator, source: MonoSV, name: string, args: SV[], node: SyntaxNode, scope: Scope): SV {
+  const fn = args[0];
+  switch (name) {
+    case 'map':
+      return mono(T.object, (block) => {
+        const emission = source.run(block);
+        return whenPresent(ev, block, emission, (child) => {
+          const value = ev.apply(fn!, [emission.value], child, node, scope);
+          return { value, empty: value.t === 'pure' && isLit(value.e, null) ? TRUE : FALSE };
+        });
+      });
+    case 'flatMap':
+      return mono(T.object, (block) => {
+        const emission = source.run(block);
+        return whenPresent(ev, block, emission, (child) => {
+          const inner = ev.apply(fn!, [emission.value], child, node, scope);
+          if (inner.t !== 'mono') throw new Unsupported(`flatMap() mapper returns ${inner.t}, not a Mono`, node);
+          return inner.run(child);
+        });
+      });
+    case 'flatMapMany':
+      return {
+        t: 'flux',
+        elem: T.object,
+        run: (block) => {
+          const emission = source.run(block);
+          if (isLit(emission.empty, true)) return { list: lit([]), element: (item: Expr) => pure(item, T.object) };
+          const produce = (child: Block) => {
+            const inner = ev.apply(fn!, [emission.value], child, node, scope);
+            if (inner.t !== 'flux') throw new Unsupported(`flatMapMany() mapper returns ${inner.t}, not a Flux`, node);
+            return inner.run(child);
+          };
+          if (isLit(emission.empty, false)) return produce(block);
+          return branch(block, not(emission.empty), produce, () => ({ list: lit([]), element: (item: Expr) => pure(item, T.object) }),
+            (test, a, b) => ({ list: cond(test, a.list, b.list), element: a.element }));
+        },
+      };
+    case 'filter':
+      return mono(source.elem, (block) => {
+        const emission = source.run(block);
+        if (isLit(emission.empty, true)) return emission;
+        const probe = attempt(block, (child) => ev.apply(fn!, [emission.value], child, node, scope));
+        if (probe.outcome.ok && probe.instrs.length === 0 && probe.outcome.value.t === 'pure') {
+          return { value: emission.value, empty: or(emission.empty, not(probe.outcome.value.e)) };
+        }
+        return whenPresent(ev, block, emission, (child) => {
+          const kept = ev.apply(fn!, [emission.value], child, node, scope);
+          if (kept.t !== 'pure') throw new Unsupported('filter() predicate is not boolean', node);
+          return { value: emission.value, empty: not(kept.e) };
+        });
+      });
+    case 'filterWhen':
+      return mono(source.elem, (block) => {
+        const emission = source.run(block);
+        return whenPresent(ev, block, emission, (child) => {
+          const predicate = ev.apply(fn!, [emission.value], child, node, scope);
+          if (predicate.t !== 'mono') throw new Unsupported('filterWhen() predicate is not a Mono', node);
+          const result = predicate.run(child);
+          if (result.value.t !== 'pure') throw new Unsupported('filterWhen() predicate is not boolean', node);
+          // An empty predicate Mono filters the value out, like false.
+          return { value: emission.value, empty: or(result.empty, not(result.value.e)) };
+        });
+      });
+    case 'switchIfEmpty':
+      return mono(source.elem, (block) => {
+        const emission = source.run(block);
+        const alternative = fn!;
+        if (alternative.t !== 'mono') throw new Unsupported('switchIfEmpty() alternative is not a Mono', node);
+        if (isLit(emission.empty, false)) return emission;
+        if (isLit(emission.empty, true)) return alternative.run(block);
+        return branch(block, emission.empty, (child) => alternative.run(child), () => ({ value: emission.value, empty: FALSE }),
+          (test, a, b) => mergeEmission(test, a, b, (t, x, y) => ev.merge(t, x, y)));
+      });
+    case 'defaultIfEmpty':
+      return mono(source.elem, (block) => {
+        const emission = source.run(block);
+        if (isLit(emission.empty, false)) return emission;
+        return { value: ev.merge(emission.empty, fn!, emission.value), empty: FALSE };
+      });
+    case 'then':
+      if (args.length === 0) {
+        return mono(T.void, (block) => {
+          source.run(block);
+          return { value: VOID, empty: TRUE };
+        });
+      }
+      return mono(fn!.t === 'mono' ? fn!.elem : T.object, (block) => {
+        source.run(block);
+        if (fn!.t !== 'mono') throw new Unsupported('then() argument is not a Mono', node);
+        return fn!.run(block);
+      });
+    case 'thenReturn':
+      return mono(elemOf(fn!), (block) => {
+        source.run(block);
+        return { value: fn!, empty: FALSE };
+      });
+    case 'thenMany':
+      return {
+        t: 'flux',
+        elem: fn!.t === 'flux' ? fn!.elem : T.object,
+        run: (block) => {
+          source.run(block);
+          if (fn!.t !== 'flux') throw new Unsupported('thenMany() argument is not a Flux', node);
+          return fn!.run(block);
+        },
+      };
+    case 'hasElement':
+      return mono(T.boolean, (block) => {
+        const emission = source.run(block);
+        return { value: pure(not(emission.empty), T.boolean), empty: FALSE };
+      });
+    case 'single':
+      return mono(source.elem, (block) => {
+        const emission = source.run(block);
+        if (!isLit(emission.empty, false)) {
+          block.emit({ op: 'ASSERT', test: not(emission.empty), error: { status: 500, code: 'NO_SUCH_ELEMENT', message: lit('Source was empty') } });
+        }
+        return { value: emission.value, empty: FALSE };
+      });
+    case 'singleOrEmpty':
+      return source;
+    case 'zipWith':
+    case 'zipWhen':
+      return mono(T.object, (block) => {
+        const left = source.run(block);
+        return whenPresent(ev, block, left, (child) => {
+          const other = name === 'zipWhen' ? ev.apply(fn!, [left.value], child, node, scope) : fn!;
+          if (other.t !== 'mono') throw new Unsupported(`${name}() argument is not a Mono`, node);
+          const right = other.run(child);
+          const value: SV = args[1] !== undefined
+            ? ev.apply(args[1], [left.value, right.value], child, node, scope)
+            : { t: 'tuple', items: [left.value, right.value] };
+          return { value, empty: right.empty };
+        });
+      });
+    case 'switchIfEmptyOrError':
+    default:
+      throw new Unsupported(`Mono.${name}() is not modeled`, node);
+  }
+}
+
+function fluxCall(ev: Evaluator, source: FluxSV, name: string, args: SV[], node: SyntaxNode, scope: Scope): SV {
+  const fn = args[0];
+  switch (name) {
+    case 'map':
+      return {
+        t: 'flux',
+        elem: T.object,
+        run: (block) => {
+          const { list, element } = source.run(block);
+          const as = block.fresh('it');
+          const mapped = mapElements(ev, fn!, list, as, element(vr(as)), block, node, scope, 'Flux.map()');
+          const body = ev.encode(mapped);
+          const jt = elemOf(mapped);
+          return { list: { k: 'map', of: list, as, body }, element: (item: Expr) => ev.view(item, jt) };
+        },
+      };
+    case 'flatMap':
+    case 'concatMap':
+    case 'flatMapSequential':
+      return {
+        t: 'flux',
+        elem: T.object,
+        run: (block) => {
+          const { list, element } = source.run(block);
+          const as = block.fresh('it');
+          const inner = pureApply(ev, fn!, [element(vr(as))], block, node, scope, `Flux.${name}()`);
+          if (inner.t !== 'mono') throw new Unsupported(`Flux.${name}() mapper is not a Mono`, node);
+          const probe = attempt(block, (child) => inner.run(child));
+          if (!probe.outcome.ok || probe.instrs.length > 0 || !isLit(probe.outcome.value.empty, false)) {
+            throw new Unsupported(`Flux.${name}() runs an operation per element`, node);
+          }
+          const value = probe.outcome.value.value;
+          const jt = elemOf(value);
+          return { list: { k: 'map', of: list, as, body: ev.encode(value) }, element: (item: Expr) => ev.view(item, jt) };
+        },
+      };
+    case 'filter':
+      return {
+        t: 'flux',
+        elem: source.elem,
+        run: (block) => {
+          const { list, element } = source.run(block);
+          const as = block.fresh('it');
+          const kept = pureApply(ev, fn!, [element(vr(as))], block, node, scope, 'Flux.filter()');
+          if (kept.t !== 'pure') throw new Unsupported('Flux.filter() predicate is not boolean', node);
+          return { list: { k: 'filter', of: list, as, body: kept.e }, element };
+        },
+      };
+    case 'sort':
+      if (args.length !== 1) throw new Unsupported('Flux.sort() without a comparator uses natural order', node);
+      return {
+        t: 'flux',
+        elem: source.elem,
+        run: (block) => {
+          const result = source.run(block);
+          return { list: sortExpr(ev, result.list, result.element, fn!, node, { ...scope, block }), element: result.element };
+        },
+      };
+    case 'take':
+      if (args.length !== 1 || fn!.t !== 'pure') throw new Unsupported('Flux.take() with a non-constant bound', node);
+      return {
+        t: 'flux',
+        elem: source.elem,
+        run: (block) => {
+          const result = source.run(block);
+          return { list: op('take', result.list, (fn as SV & { t: 'pure' }).e), element: result.element };
+        },
+      };
+    case 'next':
+      return mono(source.elem, (block) => {
+        const { list, element } = source.run(block);
+        return { value: element(op('first', list)), empty: op('isEmpty', list) };
+      });
+    case 'collectList':
+      return mono(T.list(source.elem), (block) => {
+        const { list, element } = source.run(block);
+        return { value: { t: 'list', e: list, elem: source.elem, element }, empty: FALSE };
+      });
+    case 'count':
+      return mono(T.long, (block) => {
+        const { list } = source.run(block);
+        return { value: pure(op('size', list), T.long), empty: FALSE };
+      });
+    case 'hasElements':
+      return mono(T.boolean, (block) => {
+        const { list } = source.run(block);
+        return { value: pure(not(op('isEmpty', list)), T.boolean), empty: FALSE };
+      });
+    case 'then':
+      if (args.length === 0) {
+        return mono(T.void, (block) => {
+          source.run(block);
+          return { value: VOID, empty: TRUE };
+        });
+      }
+      throw new Unsupported('Flux.then(Mono) is not modeled', node);
+    case 'switchIfEmpty':
+      return {
+        t: 'flux',
+        elem: source.elem,
+        run: (block) => {
+          const result = source.run(block);
+          if (fn!.t !== 'flux') throw new Unsupported('switchIfEmpty() alternative is not a Flux', node);
+          const alternative = fn!;
+          return branch(block, op('isEmpty', result.list), (child) => alternative.run(child), () => result,
+            (test, a, b) => ({ list: cond(test, a.list, b.list), element: b.element }));
+        },
+      };
+    case 'defaultIfEmpty':
+      return {
+        t: 'flux',
+        elem: source.elem,
+        run: (block) => {
+          const result = source.run(block);
+          return { list: cond(op('isEmpty', result.list), { k: 'list', items: [ev.encode(fn!)] }, result.list), element: result.element };
+        },
+      };
+    default:
+      throw new Unsupported(`Flux.${name}() is not modeled`, node);
+  }
+}

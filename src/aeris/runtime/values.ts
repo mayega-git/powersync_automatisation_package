@@ -248,6 +248,66 @@ export function decimalMul(left: number, right: number): number {
   return fromScaled({ units: a.units * b.units, scale: a.scale + b.scale });
 }
 
+export type RoundingMode = 'UP' | 'DOWN' | 'CEILING' | 'FLOOR' | 'HALF_UP' | 'HALF_DOWN' | 'HALF_EVEN' | 'UNNECESSARY';
+
+/** Divides scaled integers and rounds the quotient to an integer like java.math.RoundingMode. */
+function roundQuotient(numerator: bigint, denominator: bigint, mode: RoundingMode): bigint {
+  if (denominator === 0n) throw new AerisValueError('Division by zero');
+  if (denominator < 0n) {
+    numerator = -numerator;
+    denominator = -denominator;
+  }
+  const quotient = numerator / denominator; // truncated toward zero
+  const remainder = numerator % denominator;
+  if (remainder === 0n) return quotient;
+  const sign = numerator < 0n ? -1n : 1n;
+  const twice = (remainder < 0n ? -remainder : remainder) * 2n;
+  const awayFromZero = quotient + sign;
+  switch (mode) {
+    case 'UNNECESSARY': throw new AerisValueError('Rounding necessary');
+    case 'DOWN': return quotient;
+    case 'UP': return awayFromZero;
+    case 'CEILING': return sign > 0n ? awayFromZero : quotient;
+    case 'FLOOR': return sign < 0n ? awayFromZero : quotient;
+    case 'HALF_UP': return twice >= denominator ? awayFromZero : quotient;
+    case 'HALF_DOWN': return twice > denominator ? awayFromZero : quotient;
+    case 'HALF_EVEN':
+      if (twice > denominator) return awayFromZero;
+      if (twice < denominator) return quotient;
+      return quotient % 2n === 0n ? quotient : awayFromZero;
+  }
+}
+
+/** BigDecimal.setScale(scale, mode). */
+export function decimalSetScale(value: number, scale: number, mode: RoundingMode): number {
+  const scaled = toScaled(value);
+  if (scale >= scaled.scale) return value;
+  const divisor = 10n ** BigInt(scaled.scale - scale);
+  return fromScaled({ units: roundQuotient(scaled.units, divisor, mode), scale });
+}
+
+/** BigDecimal.divide(divisor, scale, mode). */
+export function decimalDivide(dividend: number, divisor: number, scale: number, mode: RoundingMode): number {
+  const a = toScaled(dividend);
+  const b = toScaled(divisor);
+  // a.units/10^a.scale / (b.units/10^b.scale) * 10^scale
+  const numerator = a.units * 10n ** BigInt(b.scale + scale);
+  const denominator = b.units * 10n ** BigInt(a.scale);
+  return fromScaled({ units: roundQuotient(numerator, denominator, mode), scale });
+}
+
+/** Character.isWhitespace: Unicode separators except non-breaking spaces, plus ASCII controls. */
+export function javaStrip(text: string): string {
+  const isWhitespace = (char: string) => /[\t\n\u000B\f\r\u001C-\u001F]/.test(char) ||
+    (/[\p{Zs}\p{Zl}\p{Zp}]/u.test(char) && !/[\u00A0\u2007\u202F]/.test(char));
+  const chars = [...text];
+  let start = 0;
+  let end = chars.length;
+  while (start < end && isWhitespace(chars[start]!)) start += 1;
+  while (end > start && isWhitespace(chars[end - 1]!)) end -= 1;
+  return chars.slice(start, end).join('');
+}
+
 // ---------------------------------------------------------------------------
 // Captured clock
 // ---------------------------------------------------------------------------
@@ -255,7 +315,9 @@ export function decimalMul(left: number, right: number): number {
 /** Formats a captured instant the way Jackson writes java.time values (ISO, trailing zeros trimmed). */
 export function formatNow(epochMillis: number, type: 'datetime' | 'datetime-local' | 'date', timeZone: string): string {
   if (type === 'datetime') {
-    return trimFraction(new Date(epochMillis).toISOString().replace('Z', '')) + 'Z';
+    // Instant.toString(): the fraction is printed in groups of three digits, omitted when zero.
+    const iso = new Date(epochMillis).toISOString();
+    return iso.endsWith('.000Z') ? `${iso.slice(0, 19)}Z` : iso;
   }
   const parts = wallClock(epochMillis, timeZone);
   const date = `${parts.year}-${parts.month}-${parts.day}`;
