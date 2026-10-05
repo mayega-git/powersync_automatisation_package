@@ -136,11 +136,17 @@ function demote(plan: EndpointPlan, offlineClass: OfflineClass, reason: string):
 function inferScopes(drafts: readonly EndpointDraft[], entities: ReadonlyMap<string, EntityModel>, config: CompilerConfig): Map<string, EntityScope> {
   const out = new Map<string, EntityScope>();
   for (const entity of entities.values()) {
-    if (config.publicEntities.includes(entity.fqn) || config.publicEntities.includes(entity.decl.simple)) {
+    if (config.publicEntities.includes(entity.fqn) || config.publicEntities.includes(entity.decl.simple) || entity.decl.annotations.some((annotation) => annotation.name === 'AerisPublic')) {
       out.set(entity.fqn, { public: true, filters: new Map() });
       continue;
     }
     const candidates = new Set<ScopePair>();
+    for (const member of entity.decl.kind === 'record' ? entity.decl.recordComponents : entity.decl.fields) {
+      const scope = member.annotations.find((annotation) => annotation.name === 'AerisScope');
+      const claimNode = scope?.args.get('value');
+      const claim = claimNode === undefined ? undefined : /"([^"]+)"/.exec(claimNode.text)?.[1];
+      if (claim !== undefined && entity.properties.has(member.name)) candidates.add(pairKey(member.name, claim));
+    }
     for (const [claim, properties] of Object.entries(config.scopeClaims)) {
       for (const property of properties) {
         const model = entity.properties.get(property);
@@ -229,6 +235,7 @@ function classify(draftIn: EndpointDraft, scopes: ReadonlyMap<string, EntityScop
   if (config.onlineOnly.some((pattern) => globMatch(pattern, draft.id) || globMatch(pattern, draft.path))) {
     return offline('ONLINE_REQUIRED', ['Declared online-only in the AERIS configuration.']);
   }
+  if (draft.declared?.offlineClass === 'ONLINE_REQUIRED') return offline('ONLINE_REQUIRED', [draft.declared.reason]);
   const program = draft.program;
 
   for (const entity of new Set([...draft.reads, ...draft.writes])) {
@@ -275,11 +282,16 @@ function classify(draftIn: EndpointDraft, scopes: ReadonlyMap<string, EntityScop
     sync = { idempotencyHeader: config.idempotency?.header ?? 'Idempotency-Key', idempotency, conflict, idMap: idMappings(program) };
   }
 
-  const override = config.overrides[draft.id];
+  const override = config.overrides[draft.id] ?? draft.declared?.offlineClass;
   if (override !== undefined) {
+    const source = config.overrides[draft.id] !== undefined ? 'configuration override' : draft.declared!.reason;
     if (override === 'LOCAL_WRITE_SAFE' && offlineClass === 'REPLAYABLE') offlineClass = 'LOCAL_WRITE_SAFE';
     else if (STRICTNESS[override] > STRICTNESS[offlineClass]) {
-      return offline(override, [`Restricted by configuration override (computed ${offlineClass}).`]);
+      if (!LOCAL_CLASSES.has(override)) return offline(override, [`Restricted by ${source} (computed ${offlineClass}).`]);
+      // Still local, only stricter: keep the proven program and its sync contract.
+      reasons.unshift(`Restricted by ${source} (computed ${offlineClass}).`);
+      offlineClass = override;
+      if (sync === undefined) return offline('ONLINE_REQUIRED', [`${source} requires a write class for a read-only endpoint.`]);
     }
   }
   return {

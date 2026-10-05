@@ -229,3 +229,26 @@ describe('Spring Boot compiler', () => {
     expect(plan.reasons[0]).toMatch(/idempotency/);
   });
 });
+
+describe('AERIS annotations', () => {
+  it('can only restrict the computed class', async () => {
+    const annotated = CONTROLLER
+      .replace('@PostMapping @ResponseStatus(HttpStatus.CREATED)', '@io.aeris.annotations.AerisOffline(policy = io.aeris.annotations.AerisPolicy.SPECULATIVE) @PostMapping @ResponseStatus(HttpStatus.CREATED)')
+      .replace('@GetMapping("/{id}")', '@io.aeris.annotations.AerisOnlineOnly("audit trail") @GetMapping("/{id}")')
+      .replace('@GetMapping("/all")', '@io.aeris.annotations.AerisOffline(policy = io.aeris.annotations.AerisPolicy.LOCAL_READ_SAFE) @GetMapping("/all")');
+    const artifact = await compileJava({ ...SOURCES, 'demo/points/PointController.java': annotated });
+    expect(endpoint(artifact, 'POST /api/points').offlineClass, endpoint(artifact, 'POST /api/points').reasons.join('; ')).toBe('SPECULATIVE');
+    expect(endpoint(artifact, 'GET /api/points/{id}')).toMatchObject({ offlineClass: 'ONLINE_REQUIRED', reasons: ['@AerisOnlineOnly: audit trail'] });
+    // An annotation never grants what the analysis refused.
+    expect(endpoint(artifact, 'GET /api/points/all').offlineClass).toBe('ONLINE_REQUIRED');
+  });
+
+  it('declares scope columns with @AerisScope', async () => {
+    const scoped = ENTITY.replace('private UUID organizationId;', '@io.aeris.annotations.AerisScope("organizationId") private UUID organizationId;');
+    const withoutAnnotation = await compileJava(SOURCES, { scopeClaims: {} });
+    expect(withoutAnnotation.projections.find((candidate) => candidate.entity === ENTITY_NAME)).toBeUndefined();
+    const artifact = await compileJava({ ...SOURCES, 'demo/points/Point.java': scoped }, { scopeClaims: {} });
+    const projection = artifact.projections.find((candidate) => candidate.entity === ENTITY_NAME);
+    expect(projection?.scope.map((filter) => filter.field)).toEqual(['organizationId']);
+  });
+});

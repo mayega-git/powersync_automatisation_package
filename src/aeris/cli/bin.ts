@@ -21,7 +21,8 @@ Commands:
   explain <METHOD> <path> [--artifact f]
                                     Show the class, reasons and local program of an endpoint
   report [--artifact f] [--format html|json] [--out f]
-  diff <old.json> <new.json>        Compare two artifacts
+  diff <old.json> <new.json> [--fail-on-regression]
+                                    Compare two artifacts (CI gate: offline endpoints that regressed)
   publish --artifact f --sign key.pem --key-id id [--out f]
   verify <signed.json> --public-key f [--key-id id]
   test --artifact f --backend <url> --database <postgres-url> --token <bearer> [--claims json] [--only glob] [--writes]
@@ -153,8 +154,11 @@ async function main(argv: readonly string[]): Promise<number> {
       const right = await loadArtifact(after);
       const previous = new Map(left.endpoints.map((plan) => [plan.id, plan]));
       let changes = 0;
+      const regressions: string[] = [];
+      const local = (offlineClass: string) => LOCAL_CLASSES.has(offlineClass as never);
       for (const plan of right.endpoints) {
         const old = previous.get(plan.id);
+        if (old !== undefined && local(old.offlineClass) && !local(plan.offlineClass)) regressions.push(`${plan.id}: ${old.offlineClass} -> ${plan.offlineClass} (${plan.reasons[0] ?? ''})`);
         if (old === undefined) {
           process.stdout.write(`${pc.green('+')} ${plan.id} ${plan.offlineClass}\n`);
           changes += 1;
@@ -170,6 +174,10 @@ async function main(argv: readonly string[]): Promise<number> {
       }
       if (left.projectionVersion !== right.projectionVersion) process.stdout.write(`projection version ${left.projectionVersion} -> ${right.projectionVersion} (devices re-snapshot)\n`);
       process.stdout.write(`${changes} endpoint change(s); artifact v${left.artifactVersion} -> v${right.artifactVersion}\n`);
+      if (regressions.length > 0) {
+        process.stdout.write(`${pc.red(`${regressions.length} endpoint(s) no longer available offline:`)}\n  ${regressions.join('\n  ')}\n`);
+        if (options['fail-on-regression'] === true) return 1;
+      }
       return 0;
     }
     case 'publish': {

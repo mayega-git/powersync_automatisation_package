@@ -100,3 +100,28 @@ version de projection (hash) change quand un appareil doit refaire un snapshot.
 `--database` compare chaque projection au schéma PostgreSQL réel (tables, colonnes,
 types). Une entité dont le mapping diverge rend ses endpoints `UNSUPPORTED`. La Gateway
 refuse aussi de démarrer sur un artefact incompatible avec la base.
+
+## Annotations (optionnelles)
+
+Les sources sont dans `java/aeris-annotations/` (rétention `SOURCE` : aucun impact à
+l'exécution). Copiez le package `io.aeris.annotations` dans le backend.
+
+| Annotation | Effet |
+|---|---|
+| `@AerisOnlineOnly("raison")` (méthode ou contrôleur) | L'endpoint reste en ligne |
+| `@AerisOffline(policy = AerisPolicy.SPECULATIVE)` | Plafonne la classe calculée ; ne peut que restreindre (ou passer de `REPLAYABLE` à `LOCAL_WRITE_SAFE`) |
+| `@AerisPublic` (entité) | Données de référence partagées par toutes les sessions |
+| `@AerisScope("organizationId")` (champ d'entité) | Cette colonne limite les lignes au claim de session indiqué |
+
+Une annotation ne donne jamais l'exécution locale à un endpoint dont le compilateur
+n'a pas prouvé la sémantique.
+
+## Porte de non-régression en CI
+
+```bash
+npx aeris analyze ./backend --database "$DATABASE_URL" --sign key.pem --key-id aeris-2026
+npx aeris diff previous/aeris-artifact.json ./backend/.aeris/aeris-artifact.json --fail-on-regression
+```
+
+La commande échoue si un endpoint utilisable hors ligne dans l'artefact précédent ne
+l'est plus, en listant la raison.

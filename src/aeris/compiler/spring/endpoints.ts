@@ -1,4 +1,5 @@
 import type {
+  OfflineClass,
   AuthRequirement,
   EndpointPlan,
   Evidence,
@@ -66,6 +67,8 @@ export interface EndpointDraft {
   external?: string;
   /** Behaviors the local plan does not reproduce exactly (validation, nested input). */
   speculative: string[];
+  /** From @AerisOnlineOnly / @AerisOffline: restricts the computed class. */
+  declared?: { offlineClass: OfflineClass; reason: string };
 }
 
 export interface CompileContext {
@@ -213,7 +216,14 @@ function compileEndpoint(
   const input: InputSpec & { params: Record<string, FieldType>; query: Record<string, FieldType & { required: boolean }> } = { params: {}, query: {} };
   const auth: { authenticated: boolean; context: string[]; policies: string[] } = { authenticated: true, context: [], policies: [] };
   const speculative: string[] = [];
+  const onlineOnly = [...controller.annotations, ...method.annotations].find((annotation) => annotation.name === 'AerisOnlineOnly');
+  const offlineAnnotation = method.annotations.find((annotation) => annotation.name === 'AerisOffline');
+  const declaredPolicy = /([A-Z_]+)\s*$/.exec(offlineAnnotation?.args.get('policy')?.text ?? '')?.[1] as OfflineClass | undefined;
+  const declared = onlineOnly !== undefined
+    ? { offlineClass: 'ONLINE_REQUIRED' as OfflineClass, reason: `@AerisOnlineOnly${onlineOnly.args.get('value') ? `: ${stringValue(onlineOnly.args.get('value')!) ?? ''}` : ''}` }
+    : declaredPolicy !== undefined ? { offlineClass: declaredPolicy, reason: `@AerisOffline(policy = ${declaredPolicy})` } : undefined;
   const draft = (extra: Partial<EndpointDraft>): EndpointDraft => ({
+    ...(declared === undefined ? {} : { declared }),
     id,
     method: httpMethod,
     path,
