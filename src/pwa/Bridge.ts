@@ -85,7 +85,7 @@ export function serveFromPage(options: WorkerSideOptions) {
   const timeout = options.timeoutMs ?? BRIDGE_TIMEOUT_MS;
 
   return async function respond(captured: CapturedRequest): Promise<unknown> {
-    const client = await findTab(options.clients, captured.clientId);
+    const client = await findTab(options.clients, captured.clientId, captured.request);
 
     if (client === undefined) {
       options.logger?.debug('bridge: no reachable tab, the request goes to the network');
@@ -94,8 +94,23 @@ export function serveFromPage(options: WorkerSideOptions) {
 
     const response = await ask(client, captured.request, options.openChannel, timeout);
 
-    if (response === undefined || !response.handled) {
+    if (response === undefined) {
+      if (!canSafelyRetry(captured.request)) {
+        return localFailure(
+          options,
+          504,
+          'The local operation timed out; its outcome is unknown. Do not retry automatically.',
+          'outcome-unknown',
+        );
+      }
       return options.goToNetwork(captured.raw);
+    }
+
+    if (!response.handled && response.error === undefined) {
+      return options.goToNetwork(captured.raw);
+    }
+    if (response.error !== undefined) {
+      return localFailure(options, 500, response.error, 'local-error');
     }
 
     options.logger?.debug('bridge: the page answered from the local database', {
@@ -105,7 +120,7 @@ export function serveFromPage(options: WorkerSideOptions) {
     const body = {
       ok: response.status === 'Success' || response.status === undefined,
       source: 'local',
-      data: response.entity ? formatPayload(response.entity) : null,
+      data: response.entity === undefined ? null : formatPayload(response.entity),
     };
 
     return options.buildResponse(JSON.stringify(body), {
@@ -121,11 +136,12 @@ export function serveFromPage(options: WorkerSideOptions) {
 async function findTab(
   clients: WorkerClients,
   clientId: string,
+  request: HttpRequest,
 ): Promise<WorkerClient | undefined> {
   if (clientId.length > 0) {
-    const exact = await clients.get(clientId);
-    if (exact !== undefined) return exact;
+    return clients.get(clientId);
   }
+  if (!canSafelyRetry(request)) return undefined;
   const open = await clients.matchAll({ type: 'window' });
   return open[0];
 }
@@ -143,6 +159,7 @@ function ask(
     const finish = (value: BridgeResponse | undefined): void => {
       if (done) return;
       done = true;
+      clearTimeout(timer);
       channel.port1.close?.();
       resolve(value);
     };
@@ -150,10 +167,14 @@ function ask(
     channel.port1.onmessage = (event) => finish(event.data as BridgeResponse);
     channel.port1.start?.();
 
-    setTimeout(() => finish(undefined), timeout);
+    const timer = setTimeout(() => finish(undefined), timeout);
 
     const message: BridgeRequest = { channel: BRIDGE_CHANNEL, request };
-    client.postMessage(message, [channel.port2]);
+    try {
+      client.postMessage(message, [channel.port2]);
+    } catch {
+      finish(undefined);
+    }
   });
 }
 
@@ -196,7 +217,7 @@ export function bridgeServiceWorker(options: PageSideOptions): () => void {
       } catch (cause) {
         options.logger?.error('bridge: the page could not answer', cause);
         port.postMessage({
-          handled: false,
+          handled: true,
           error: cause instanceof Error ? cause.message : String(cause),
         } satisfies BridgeResponse);
       }
@@ -205,6 +226,26 @@ export function bridgeServiceWorker(options: PageSideOptions): () => void {
 
   options.source.addEventListener('message', listener);
   return () => options.source.removeEventListener?.('message', listener);
+}
+
+function canSafelyRetry(request: HttpRequest): boolean {
+  const method = request.method.toUpperCase();
+  return method === 'GET' || method === 'HEAD' || method === 'OPTIONS';
+}
+
+function localFailure(
+  options: WorkerSideOptions,
+  status: number,
+  error: string,
+  outcome: string,
+): unknown {
+  return options.buildResponse(JSON.stringify({ ok: false, source: 'local', error }), {
+    status,
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Offline-Sync': outcome,
+    },
+  });
 }
 
 export function connectBridge(syncInstance: any): () => void {

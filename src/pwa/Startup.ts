@@ -89,7 +89,20 @@ export function patchFetch(options: PatchFetchOptions): () => void {
       });
     } catch (cause) {
       options.logger?.error('fetch: the local database did not answer', cause);
-      return callOriginal(input, init);
+      const method = req.method.toUpperCase();
+      if (method === 'GET' || method === 'HEAD' || method === 'OPTIONS') {
+        return callOriginal(input, init);
+      }
+      return options.buildResponse(
+        JSON.stringify({
+          ok: false,
+          error: 'The local operation failed; it was not replayed to the network.',
+        }),
+        {
+          status: 500,
+          headers: { 'Content-Type': 'application/json', 'X-Offline-Sync': 'local-error' },
+        },
+      );
     }
   };
 

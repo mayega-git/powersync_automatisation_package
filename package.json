@@ -25,6 +25,11 @@
       "types": "./dist/ui/index.d.ts",
       "import": "./dist/ui/index.js",
       "default": "./dist/ui/index.js"
+    },
+    "./aeris": {
+      "types": "./dist/aeris/index.d.ts",
+      "import": "./dist/aeris/index.js",
+      "default": "./dist/aeris/index.js"
     }
   },
   "files": [
@@ -50,6 +55,7 @@
   "author": "KSM",
   "license": "UNLICENSED",
   "dependencies": {
+    "java-parser": "^3.0.1",
     "js-yaml": "^4.3.2",
     "picocolors": "^1.1.1"
   },
@@ -62,15 +68,16 @@
     "@powersync/common": "^2.1.0",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^20.11.0",
+    "@types/react": "^18.2.0",
     "better-sqlite3": "^11.0.0",
+    "react": "^18.2.0",
     "tsx": "^4.7.0",
     "typescript": "^5.4.0",
-    "vitest": "^4.1.10",
-    "@types/react": "^18.2.0",
-    "react": "^18.2.0"
+    "vitest": "^4.1.10"
   },
   "bin": {
-    "offline-sync": "./dist/init/bin.js"
+    "offline-sync": "./dist/init/bin.js",
+    "aeris": "./dist/aeris/bin.js"
   },
   "peerDependenciesMeta": {
     "@powersync/service-sync-rules": {

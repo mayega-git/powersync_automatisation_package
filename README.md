@@ -4,6 +4,45 @@ Module offline-first (`@ksm/offline-sync`) : interception des requêtes HTTP,
 base locale, rejeu différé, branché sur le moteur de synchronisation
 PowerSync.
 
+Le sous-module expérimental `@ksm/offline-sync/aeris` définit un format IR
+commun, un contrat d'adaptateur, la découverte des routes Spring MVC annotées
+et une classification conservatrice. L'adaptateur Spring parse le Java en CST
+et résout certains appels vers les méthodes de classes et d'interfaces du
+projet. Il reconnaît aussi un sous-ensemble explicite d'opérateurs Reactor
+`Mono`/`Flux` lorsque le type statique est connu et conserve les annotations
+d'autorisation Spring restrictives comme preuves dans l'IR. Il ne résout pas
+encore complètement les types, l'héritage, le dispatch dynamique, les accès
+aux données ni les effets métier ; aucun plan local exécutable n'est produit
+et les routes restent `UNSUPPORTED`.
+Cette API est destinée au build-time côté Node.js, pas au bundle navigateur.
+
+Pour générer un premier rapport d’analyse depuis un backend Spring Boot :
+
+```bash
+npx aeris analyze ./chemin/vers/backend
+```
+
+Pour signer l’IR en CI avec une clé Ed25519 :
+
+```bash
+npx aeris analyze ./chemin/vers/backend \
+  --signing-key "$AERIS_SIGNING_PRIVATE_KEY_FILE" \
+  --key-id "aeris-prod-2026"
+```
+
+La signature est optionnelle pour les rapports de développement. Le vérificateur
+doit associer le `keyId` à une clé publique obtenue par un canal de confiance ;
+la clé publique n’est pas embarquée dans l’enveloppe et ne doit pas être
+remplacée par une clé simplement fournie avec l’artefact.
+
+La commande écrit `.aeris/aeris-ir.json` dans le backend et calcule une
+empreinte SHA-256 des sources Java analysées. Les dossiers générés et les
+répertoires de dépendances sont ignorés. À ce stade, la découverte des routes
+est disponible, avec un graphe d'appels source partiel. Le format signé protège
+l’intégrité et l’origine de l’IR, mais ne prouve pas à lui seul la justesse de
+l’analyse. Les routes restent `UNSUPPORTED` tant que leur sémantique complète
+n’est pas démontrée.
+
 ## Installation
 
 ```bash
@@ -96,7 +135,7 @@ Elle écrit quatre fichiers :
   charge : la liste des pages (`PAGES_TO_PRECACHE`) à rendre disponibles
   hors ligne avant même leur première visite — typiquement celles derrière
   une connexion. Si vous avez déjà un Service Worker actif ailleurs dans
-  le projet, [`pwa.md`](pwa.md) explique pourquoi un seul
+  le projet, [`next-app-router-pwa.md`](docs-pwa/next-app-router-pwa.md) explique pourquoi un seul
   Service Worker peut contrôler une page à la fois, et dit précisément
   quoi copier de `sw.ts` dans le vôtre.
 
@@ -105,7 +144,23 @@ rien demander : la route qui compile `sw.ts` en un vrai programme
 téléchargeable, `withSerwist` dans `next.config.*`, et les paquets que ça
 demande (`@serwist/turbopack`, `esbuild-wasm`). 
 
-Il reste, dans tous les cas, deux choses à faire à la main (une fois le `scaffold` terminé) — [`pwa.md`](pwa.md) dit précisément où et dans quel ordre :
+## Conditions avant production
+
+Le mode hors ligne ne rend pas automatiquement toute l'application disponible :
+il faut précharger les pages et ressources nécessaires, déclarer chaque
+opération métier, puis tester le parcours sur un build de production et sur les
+navigateurs/appareils visés. Le Service Worker exige HTTPS (sauf `localhost`)
+et doit contrôler le bon périmètre de pages.
+
+Le rejeu réseau est « au moins une fois » : le serveur métier doit traiter
+`Idempotency-Key` de façon atomique et conserver les clés assez longtemps pour
+couvrir la durée de rétention hors ligne. Vérifiez aussi l'expiration/renouvellement
+des jetons, la politique de données sensibles stockées localement, les quotas et
+la récupération après effacement de stockage. En cas de timeout ambigu du pont
+local, une mutation n'est plus envoyée automatiquement au réseau : l'application
+doit afficher l'échec et permettre une vérification explicite de son état.
+
+Il reste, dans tous les cas, deux choses à faire à la main (une fois le `scaffold` terminé) — [`next-app-router-pwa.md`](docs-pwa/next-app-router-pwa.md) dit précisément où et dans quel ordre :
 1. dire au navigateur d'enregistrer le Service Worker au démarrage
    (`SerwistProvider`, ou l'équivalent de votre bibliothèque) ;
 2. Intégrer le `OfflineSyncProvider` dans votre composant racine.
@@ -124,4 +179,3 @@ export function OfflineSyncWrapper({ children }: { children: React.ReactNode }) 
 ```
 
 Ce wrapper doit ensuite être importé et placé dans votre `layout.tsx`, généralement **à l'intérieur** de votre contexte d'authentification.
-

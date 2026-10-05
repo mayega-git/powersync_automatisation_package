@@ -118,7 +118,7 @@ describe('the fallback: patching fetch', () => {
     expect(await holder.fetch('/api/education/blogs')).toBe('from the network');
   });
 
-  it('falls back to the network when the database fails, without breaking the call', async () => {
+  it('falls back to the network when a read fails', async () => {
     const holder = holderWith(async () => 'from the network');
     patchFetch({
       holder,
@@ -132,6 +132,24 @@ describe('the fallback: patching fetch', () => {
     });
 
     expect(await holder.fetch('/api/education/tags')).toBe('from the network');
+  });
+
+  it('does not replay a mutation when the local handler fails', async () => {
+    const original = vi.fn(async (_input: unknown, _init?: unknown) => 'from the network');
+    const holder = holderWith(original);
+    patchFetch({
+      holder,
+      handles: () => true,
+      respond: async () => { throw new Error('database closed'); },
+      buildResponse: (body, init) => ({ body, ...init }),
+      readRequest: async () => ({ method: 'POST', url: '/api/items' }),
+      logger: { error: () => {} },
+    });
+
+    const response = await holder.fetch('/api/items') as { status: number; body: string };
+    expect(response.status).toBe(500);
+    expect(JSON.parse(response.body)).toMatchObject({ ok: false });
+    expect(original).not.toHaveBeenCalled();
   });
 
   it('restores the original when unpatched', async () => {

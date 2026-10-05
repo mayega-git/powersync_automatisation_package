@@ -79,10 +79,10 @@ describe('reading the declaration', () => {
     });
   });
 
-  it('refuses a table set by the template and never filled in', () => {
-    // Without this, the table would never be intercepted and nothing would say so.
+  it('ignores a table set by the template and never filled in', () => {
+    // Empty entries are generated as placeholders and are not active routes.
     const cwd = write('entities:\n  tag_entity:\n');
-    expect(() => loadEntities(cwd)).toThrow(/with no path at all/);
+    expect(loadEntities(cwd)).toEqual({});
   });
 
   it('refuses a file with no entities block', () => {

@@ -207,8 +207,10 @@ describe('what the declaration refuses', () => {
     expect(() => EntityRoutes.build({ a: '/' })).toThrow(/whole/);
   });
 
-  it('refuses a line that is not "METHOD /path"', () => {
-    expect(() => EntityRoutes.build({ a: ['/api/x'] })).toThrow(/isn't a request/);
+  it('accepts a path without a method and expands it to supported methods', () => {
+    const routes = EntityRoutes.build({ a: ['/api/x'] });
+    expect(routes.resolve('GET', '/api/x')?.table).toBe('a');
+    expect(routes.resolve('POST', '/api/x')?.table).toBe('a');
   });
 
   it('refuses a method with no SQL equivalent', () => {

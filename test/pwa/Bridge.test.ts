@@ -71,6 +71,21 @@ describe('the bridge, Service Worker side', () => {
     expect(response.headers['X-Offline-Sync']).toBe('local-database');
   });
 
+  it.each([false, 0, ''])('preserves a falsy local value: %j', async (entity) => {
+    const respond = serveFromPage({
+      clients: clientsWith(tabThatAnswers({ handled: true, status: 'Success', entity })),
+      openChannel: fakeChannel,
+      buildResponse,
+      goToNetwork: async () => 'from the network',
+    });
+
+    const response = (await respond({ raw: {}, clientId: 'c-1', request: req })) as {
+      body: string;
+    };
+
+    expect(JSON.parse(response.body).data).toBe(entity);
+  });
+
   it('goes to the network when the page says it is not for it', async () => {
     const network = vi.fn(async () => 'from the network');
     const respond = serveFromPage({
@@ -98,7 +113,7 @@ describe('the bridge, Service Worker side', () => {
     expect(await respond({ raw: {}, clientId: 'c-1', request: req })).toBe('from the network');
   });
 
-  it('NEVER BLOCKS when the page never answers', async () => {
+  it('falls back to the network when a read never receives an answer', async () => {
     // The most important property here. No spec imposes a deadline on
     // respondWith: without this safety net, a busy page would hold the
     // request until the browser kills the Service Worker.
@@ -118,6 +133,42 @@ describe('the bridge, Service Worker side', () => {
     vi.useRealTimers();
   });
 
+  it('does not replay a mutation when the page response times out', async () => {
+    vi.useFakeTimers();
+    const network = vi.fn(async () => 'from the network');
+    const respond = serveFromPage({
+      clients: clientsWith(tabThatAnswers(undefined)),
+      openChannel: fakeChannel,
+      buildResponse,
+      goToNetwork: network,
+      timeoutMs: 50,
+    });
+    const promise = respond({
+      raw: {}, clientId: 'c-1', request: { method: 'POST', url: '/api/items' },
+    }) as Promise<{ status: number; headers: Record<string, string>; body: string }>;
+    await vi.advanceTimersByTimeAsync(60);
+    const response = await promise;
+    expect(response.status).toBe(504);
+    expect(response.headers['X-Offline-Sync']).toBe('outcome-unknown');
+    expect(network).not.toHaveBeenCalled();
+    vi.useRealTimers();
+  });
+
+  it('never relays a request to a different tab when its client is gone', async () => {
+    const otherTab = tabThatAnswers({ handled: true, status: 'Success', entity: 'wrong user' });
+    const get = vi.fn(async () => undefined as never);
+    const matchAll = vi.fn(async () => [otherTab as never]);
+    const network = vi.fn(async () => 'from the network');
+    const respond = serveFromPage({
+      clients: { get, matchAll },
+      openChannel: fakeChannel,
+      buildResponse,
+      goToNetwork: network,
+    });
+    expect(await respond({ raw: {}, clientId: 'closed-client', request: req })).toBe('from the network');
+    expect(matchAll).not.toHaveBeenCalled();
+  });
+
   it('falls back to any open tab when the request names none', async () => {
     // clientId is the empty string on a navigation request: the page doesn't
     // exist yet. Since the local database is the same for everyone, any open
@@ -134,6 +185,24 @@ describe('the bridge, Service Worker side', () => {
     const response = (await respond({ raw: {}, clientId: '', request: req })) as { body: string };
     expect(get).not.toHaveBeenCalled();
     expect(JSON.parse(response.body)).toEqual({ ok: true, source: 'local', data: 'ok' });
+  });
+
+  it('does not send a mutation with no client identity to an arbitrary tab', async () => {
+    const tab = tabThatAnswers({ handled: true, status: 'Success', entity: 'wrong account' });
+    const matchAll = vi.fn(async () => [tab as never]);
+    const network = vi.fn(async () => 'from the network');
+    const respond = serveFromPage({
+      clients: { get: async () => undefined, matchAll },
+      openChannel: fakeChannel,
+      buildResponse,
+      goToNetwork: network,
+    });
+
+    expect(await respond({
+      raw: {}, clientId: '', request: { method: 'POST', url: '/api/items' },
+    })).toBe('from the network');
+    expect(matchAll).not.toHaveBeenCalled();
+    expect(network).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -190,7 +259,7 @@ describe('the bridge, page side', () => {
     expect(received[0]).toEqual({ handled: false });
   });
 
-  it('falls back to the network rather than staying silent when the database fails', async () => {
+  it('reports a handled local failure instead of inviting a network replay', async () => {
     // Staying silent would make the Service Worker wait out its whole timeout for nothing.
     const fake = fakeSource();
     const errors: unknown[] = [];
@@ -207,7 +276,7 @@ describe('the bridge, page side', () => {
     fake.send(message(), { postMessage: (m: BridgeResponse) => received.push(m) });
     await new Promise((f) => setImmediate(f));
 
-    expect(received[0]).toMatchObject({ handled: false, error: 'database closed' });
+    expect(received[0]).toMatchObject({ handled: true, error: 'database closed' });
     expect(errors).toHaveLength(1);
   });
 
