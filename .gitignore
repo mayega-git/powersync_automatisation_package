@@ -7,3 +7,4 @@ INSTALLATION-CLIENT.md
 EXEMPLE-INSTALLATION-BACKEND.md
 *.tgz
 .aeris/
+.scratch/
