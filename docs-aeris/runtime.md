@@ -61,7 +61,14 @@ Réponses locales : même statut et même corps que le backend ; en-têtes
 
 ## Autorisations hors ligne
 
-Les `@PreAuthorize` sont recopiés dans l'IR et évalués sur les claims mis en cache :
+Les `@PreAuthorize` sont **compilés** : le compilateur exécute symboliquement les beans
+de politique du backend (par ex. `BusinessAccessPolicy.hasPermission`) et produit des
+contrôles IR sur les claims de session (`auth.checks`). Sur le backend `iwm-backend`,
+les 424 endpoints locaux protégés par `@businessAccessPolicy…` ont leur politique
+entièrement compilée : aucune réimplémentation côté front. La session doit fournir les
+autorités accordées dans le claim `authorities` (le claim `permissions` du JWT).
+
+À défaut de contrôle compilé, l'expression est évaluée sur les claims mis en cache :
 `hasAuthority`, `hasAnyAuthority`, `hasRole`, `hasAnyRole`, `isAuthenticated`,
 `permitAll`, `denyAll`, `and/or/not`, `claim('x').contains('y')`. Les appels de beans
 (`@businessAccessPolicy.hasPermission(authentication, 'products:write')`) sont délégués

@@ -227,6 +227,10 @@ function validateEndpoint(
     query: new Set(Object.keys(endpoint.input?.query ?? {})),
     contextClaims: new Set(endpoint.auth?.context ?? []),
   };
+  for (const check of endpoint.auth?.checks ?? []) {
+    if (typeof check.policy !== 'string') problems.push(`${where}: malformed authorization check`);
+    validateExpr(check.test, new Set(), state, 0);
+  }
   const terminates = validateBlock(endpoint.program, new Set(), state, 0);
   if (!terminates) problems.push(`${where}: every execution path must end with RETURN`);
   for (const entity of state.writes) {

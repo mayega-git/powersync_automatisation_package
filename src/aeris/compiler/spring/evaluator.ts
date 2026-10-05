@@ -1469,7 +1469,10 @@ export class Evaluator {
     // The configured Authentication is a verified session: Spring's inherited accessors are known.
     if (decl.fqn === this.config.context.authentication && args.length === 0) {
       if (name === 'isAuthenticated') return pure(TRUE, T.boolean);
-      if (name === 'getAuthorities') return { t: 'list', e: { k: 'ctx', name: 'authorities' }, elem: T.string, element: (item) => pure(item, T.string) };
+      if (name === 'getAuthorities') {
+        const granted: JType = { name: 'org.springframework.security.core.GrantedAuthority', args: [], array: 0 };
+        return { t: 'list', e: op('coalesce', { k: 'ctx', name: this.config.context.authoritiesClaim ?? 'authorities' }, lit([])), elem: granted, element: (item) => pure(item, granted) };
+      }
     }
     this.fail(`No method ${decl.simple}.${name}/${args.length}`, node, scope);
   }

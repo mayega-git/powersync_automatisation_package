@@ -26,6 +26,8 @@ export interface CompilerConfig {
     sources: ContextSource[];
     /** Class of the Authentication principal; its fields are session claims (same names). */
     authentication?: string;
+    /** Session claim holding the granted authorities (Authentication#getAuthorities). */
+    authoritiesClaim?: string;
   };
   /** Type name prefixes whose use is an external, irreversible effect (forces ONLINE_REQUIRED). */
   externalEffects: string[];
@@ -133,6 +135,7 @@ export function mergeConfig(raw: unknown): CompilerConfig {
       return source;
     });
   }
+  if (input.context?.authoritiesClaim !== undefined) config.context.authoritiesClaim = String(input.context.authoritiesClaim);
   if (input.context?.authentication !== undefined) {
     if (typeof input.context.authentication !== 'string') throw new Error('context.authentication must be a class name.');
     config.context.authentication = input.context.authentication;

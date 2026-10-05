@@ -400,8 +400,20 @@ export class AerisRuntime {
     for (const claim of plan.auth.context) {
       if (context?.[claim] === undefined || context[claim] === null) return this.blocked(plan, `Session claim ${claim} is missing.`);
     }
+    const compiled = new Map((plan.auth.checks ?? []).map((check) => [check.policy, check.test]));
     for (const policy of plan.auth.policies ?? []) {
-      const decision = this.options.authorize?.(policy, context ?? {}) ?? evaluatePolicy(policy, context ?? {}, this.options.policyBeans);
+      const test = compiled.get(policy);
+      let decision: boolean | undefined;
+      if (this.options.authorize !== undefined) decision = this.options.authorize(policy, context ?? {});
+      if (decision === undefined && test !== undefined) {
+        try {
+          decision = this.executor!.check(plan, test, context ?? {});
+        } catch (error) {
+          // A check failing like the server's (e.g. a missing claim) denies; anything else is undecidable.
+          decision = error instanceof AerisHttpError ? false : undefined;
+        }
+      }
+      if (decision === undefined) decision = evaluatePolicy(policy, context ?? {}, this.options.policyBeans);
       if (decision === undefined) return this.blocked(plan, `Authorization ${policy} cannot be checked offline.`);
       if (!decision) return this.errorResponse(403, 'ACCESS_DENIED', 'Access denied.', request.url);
     }

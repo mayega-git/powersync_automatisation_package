@@ -515,6 +515,11 @@ function valueMethod(ev: Evaluator, receiver: SV & { t: 'pure' }, name: string, 
     case 'java.util.UUID':
       if (name === 'toString' && args.length === 0) return pure(self, T.string);
       break;
+    case 'org.springframework.security.core.GrantedAuthority':
+    case 'org.springframework.security.core.authority.SimpleGrantedAuthority':
+      // Granted authorities are carried as their string form in the session claims.
+      if (name === 'getAuthority' && args.length === 0) return pure(self, T.string);
+      break;
     case 'java.math.BigDecimal': {
       const decimal = { name: 'java.math.BigDecimal', args: [], array: 0 };
       switch (`${name}/${args.length}`) {

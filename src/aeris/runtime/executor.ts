@@ -97,6 +97,15 @@ export interface ExecutorOptions {
 export class Executor {
   constructor(private readonly options: ExecutorOptions) {}
 
+  /** Evaluates a compiled authorization check on session claims (no data access). */
+  check(plan: EndpointPlan, test: Expr, context: Readonly<Record<string, JsonValue>>): boolean {
+    const request: ExecutionRequest = { params: {}, query: {}, body: undefined, context, path: plan.path };
+    const frame = new Frame(this.options, plan, { params: {}, query: {}, body: undefined }, request, { now: Date.now(), uuids: [] }, undefined as unknown as StoreTx);
+    const value = frame.eval(test);
+    if (typeof value !== 'boolean') throw new AerisExecutionError(`Authorization check of ${plan.id} is not boolean.`);
+    return value;
+  }
+
   async execute(plan: EndpointPlan, request: ExecutionRequest, captured: Captured, tx: StoreTx): Promise<ExecutionResult> {
     if (plan.program === undefined) throw new AerisExecutionError(`${plan.id} has no program.`);
     if (captured.uuids.length < plan.uuidSlots) throw new AerisExecutionError(`${plan.id} needs ${plan.uuidSlots} captured identifiers.`);

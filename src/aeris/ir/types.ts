@@ -277,6 +277,12 @@ export interface AuthRequirement {
    * server re-evaluates them on every replay.
    */
   policies?: readonly string[];
+  /**
+   * Authorization expressions compiled from the backend's own policy code into
+   * boolean IR expressions over session claims. A policy listed here needs no
+   * application-provided implementation.
+   */
+  checks?: readonly { policy: string; test: Expr }[];
 }
 
 export interface InputSpec {

@@ -25,7 +25,8 @@ approximation heuristique ni IA dans le chemin de décision.
 | Bibliothèque | `String`, `UUID`, `Objects`, `Optional`, `List/Set/Map.of`, `ArrayList`, `LinkedHashMap`, `LinkedHashSet`, `BigDecimal` (exact, `setScale`/`divide` avec `RoundingMode`), `java.time` (`now()` capturé), `Comparator.comparing…` |
 | Erreurs | `ResponseStatusException`, `@ResponseStatus` sur exceptions, `@RestControllerAdvice` (portée, ordre, gestionnaire le plus proche, **corps d'erreur exact** quand il est calculable) |
 | Jackson | propriétés par getters (y compris `isNew()` → `"new"`), records, `@JsonProperty`, `@JsonIgnore`, `@JsonIgnoreProperties` ; `@JsonFormat`, `@JsonSerialize`… refusés |
-| Contexte | sources de session déclarées (`context.sources`), jeton `Authentication` configuré |
+| Contexte | sources de session déclarées (`context.sources`), jeton `Authentication` configuré (`isAuthenticated`, `getAuthorities`) |
+| Autorisation | `@PreAuthorize` compilé en contrôles IR : `hasAuthority`, `hasRole`, `and/or/not`, appels `@bean.méthode(authentication, '…')` exécutés symboliquement |
 
 ## Configuration (`aeris.config.yaml`)
 

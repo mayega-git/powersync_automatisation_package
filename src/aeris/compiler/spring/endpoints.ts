@@ -18,6 +18,7 @@ import { Evaluator, type Scope } from './evaluator.js';
 import { HTTP_STATUS } from './library.js';
 import { fieldTypeOf, type EntityModel, type PersistenceModel } from './persistence.js';
 import { JacksonModel } from './serialize.js';
+import { compilePolicy } from './policies.js';
 import {
   and,
   Block,
@@ -214,7 +215,7 @@ function compileEndpoint(
   evaluator.record('handler', method.node, controller.file.path, handler.symbol);
 
   const input: InputSpec & { params: Record<string, FieldType>; query: Record<string, FieldType & { required: boolean }> } = { params: {}, query: {} };
-  const auth: { authenticated: boolean; context: string[]; policies: string[] } = { authenticated: true, context: [], policies: [] };
+  const auth: { authenticated: boolean; context: string[]; policies: string[]; checks: { policy: string; test: Expr }[] } = { authenticated: true, context: [], policies: [], checks: [] };
   const speculative: string[] = [];
   const onlineOnly = [...controller.annotations, ...method.annotations].find((annotation) => annotation.name === 'AerisOnlineOnly');
   const offlineAnnotation = method.annotations.find((annotation) => annotation.name === 'AerisOffline');
@@ -230,7 +231,12 @@ function compileEndpoint(
     handler,
     input,
     output: { status: 200, list: false, empty: false },
-    auth: { authenticated: auth.authenticated, context: auth.context, ...(auth.policies.length > 0 ? { policies: auth.policies } : {}) },
+    auth: {
+      authenticated: auth.authenticated,
+      context: auth.context,
+      ...(auth.policies.length > 0 ? { policies: auth.policies } : {}),
+      ...(auth.checks.length > 0 ? { checks: auth.checks } : {}),
+    },
     uuidSlots: evaluator.counters.uuidSlots,
     reads: [...evaluator.reads],
     writes: [...evaluator.writes],
@@ -247,6 +253,8 @@ function compileEndpoint(
       if (expression === undefined) return draft({ unsupported: 'Authorization expression is not constant.' });
       if (annotation.name === 'PostAuthorize') return draft({ unsupported: '@PostAuthorize depends on the returned value.' });
       auth.policies.push(expression);
+      const compiled = compilePolicy(expression, evaluator);
+      if (compiled !== undefined) auth.checks.push({ policy: expression, test: compiled });
       evaluator.record('authorization', annotation.node, controller.file.path, handler.symbol);
     } else if (annotation.name === 'Secured' || annotation.name === 'RolesAllowed') {
       return draft({ unsupported: `@${annotation.name} is not modeled.` });
@@ -266,6 +274,7 @@ function compileEndpoint(
     if (evaluator.writes.size > 0) insertQueueIntent(program);
     const claims = new Set<string>();
     collectClaims(program, claims);
+    collectClaims(auth.checks, claims);
     auth.context.push(...[...claims].sort());
     return draft({ program, output, uuidSlots: evaluator.counters.uuidSlots });
   } catch (error) {
