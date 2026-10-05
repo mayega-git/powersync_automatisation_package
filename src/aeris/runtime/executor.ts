@@ -325,12 +325,17 @@ class Frame {
       if (!type.nullable) throw new AerisHttpError(500, 'NOT_NULL_VIOLATION', `${label} cannot be null.`);
       return null;
     }
+    let stored: JsonValue;
     try {
-      if (type.list === true || type.type === 'json') return value;
-      return castValue(value, type.type, type.values);
+      stored = type.list === true || type.type === 'json' ? value : castValue(value, type.type, type.values);
     } catch (error) {
       throw new AerisHttpError(500, 'TYPE_MISMATCH', `${label}: ${(error as Error).message}`);
     }
+    // varchar(n): PostgreSQL counts characters (code points).
+    if (type.maxLength !== undefined && typeof stored === 'string' && [...stored].length > type.maxLength) {
+      throw new AerisHttpError(500, 'VALUE_TOO_LONG', `${label} is longer than ${type.maxLength} characters.`);
+    }
+    return stored;
   }
 
   private resolveFilter(filter: Filter, projection: Projection): ResolvedFilter {

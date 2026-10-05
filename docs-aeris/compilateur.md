@@ -96,11 +96,22 @@ version de projection (hash) change quand un appareil doit refaire un snapshot.
    bornées), c'est une vraie limite : refactorer le backend ou laisser en ligne.
 4. Ne jamais forcer une classe plus permissive : `overrides` ne peut que restreindre.
 
-## Vérification du schéma
+## Vérification du schéma et contraintes de la base
 
 `--database` compare chaque projection au schéma PostgreSQL réel (tables, colonnes,
 types). Une entité dont le mapping diverge rend ses endpoints `UNSUPPORTED`. La Gateway
 refuse aussi de démarrer sur un artefact incompatible avec la base.
+
+Les contraintes invisibles dans le code Java sont lues dans `pg_constraint` et
+`information_schema` :
+
+- `varchar(n)` et `NOT NULL` sans valeur par défaut sont vérifiés localement : une
+  valeur trop longue échoue en `500` comme sur le serveur (divergence trouvée par les
+  tests différentiels, puis corrigée) ;
+- une écriture touchant une colonne sous clé étrangère, contrainte d'unicité ou
+  `CHECK` rend l'endpoint `SPECULATIVE` : seul le serveur peut la valider.
+
+Toujours compiler avec `--database` en CI.
 
 ## Annotations (optionnelles)
 

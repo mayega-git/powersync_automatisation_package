@@ -22,6 +22,7 @@ import { globMatch, type CompilerConfig } from './config.js';
 import { impliedPairs, insertedPairs, pairKey, queryGuards, type ScopePair } from './scope.js';
 import type { EndpointDraft } from './spring/endpoints.js';
 import type { EntityModel } from './spring/persistence.js';
+import type { ColumnConstraints } from './schema-check.js';
 
 const STRICTNESS: Readonly<Record<OfflineClass, number>> = {
   LOCAL_READ_SAFE: 0, LOCAL_WRITE_SAFE: 0, REPLAYABLE: 1, SPECULATIVE: 2, ONLINE_REQUIRED: 3, UNSUPPORTED: 4,
@@ -38,6 +39,8 @@ export interface AssembleInput {
   now?: Date;
   /** Entities whose mapping does not match the live database (from a schema check). */
   unavailableEntities?: ReadonlyMap<string, string>;
+  /** Column constraints read from the live database (entity -> column -> constraints). */
+  constraints?: ReadonlyMap<string, ReadonlyMap<string, ColumnConstraints>>;
 }
 
 interface EntityScope {
@@ -56,8 +59,10 @@ export function assemble(input: AssembleInput): AerisArtifact {
   const scopes = inferScopes(candidates, entities, config);
 
   const plans: EndpointPlan[] = [];
-  for (const draft of drafts) {
-    const broken = [...new Set([...draft.reads, ...draft.writes])].map((entity) => input.unavailableEntities?.get(entity)).find((problem) => problem !== undefined);
+  for (const draftIn of drafts) {
+    const broken = [...new Set([...draftIn.reads, ...draftIn.writes])].map((entity) => input.unavailableEntities?.get(entity)).find((problem) => problem !== undefined);
+    const checked = serverCheckedWrites(draftIn, entities, input.constraints);
+    const draft = checked.length === 0 ? draftIn : { ...draftIn, speculative: [...draftIn.speculative, `The database checks ${checked.join(', ')} (foreign key, unique or check constraints): only the server can validate these writes.`] };
     plans.push(broken === undefined ? classify(draft, scopes, entities, config) : classify({ ...draft, program: undefined, unsupported: broken }, scopes, entities, config));
   }
 
@@ -67,7 +72,7 @@ export function assemble(input: AssembleInput): AerisArtifact {
     if (!LOCAL_CLASSES.has(plan.offlineClass)) continue;
     for (const entity of [...plan.reads, ...plan.writes]) {
       if (projectionsByEntity.has(entity)) continue;
-      projectionsByEntity.set(entity, projectionOf(entities.get(entity)!, scopes.get(entity)!));
+      projectionsByEntity.set(entity, projectionOf(entities.get(entity)!, scopes.get(entity)!, input.constraints?.get(entity)));
     }
   }
   const projections = [...projectionsByEntity.values()].sort((a, b) => a.entity.localeCompare(b.entity));
@@ -185,14 +190,22 @@ function inferScopes(drafts: readonly EndpointDraft[], entities: ReadonlyMap<str
   return out;
 }
 
-function projectionOf(entity: EntityModel, scope: EntityScope): Projection {
+function projectionOf(entity: EntityModel, scope: EntityScope, constraints?: ReadonlyMap<string, ColumnConstraints>): Projection {
   const scopeFilters: Filter[] = [...scope.filters].map(([field, claim]) => ({ field, cmp: 'eq', value: { k: 'ctx', name: claim } }));
   return {
     entity: entity.fqn,
     ...(entity.schema === undefined ? {} : { schema: entity.schema }),
     table: entity.table,
     key: entity.key,
-    columns: [...entity.properties.values()].map((property) => ({ name: property.name, column: property.column, type: property.type })),
+    columns: [...entity.properties.values()].map((property) => {
+      const constraint = constraints?.get(property.column);
+      const type = {
+        ...property.type,
+        ...(constraint?.notNull === true ? { nullable: false } : {}),
+        ...(constraint?.maxLength !== undefined && (property.type.type === 'string' || property.type.type === 'enum') && property.type.list !== true ? { maxLength: constraint.maxLength } : {}),
+      };
+      return { name: property.name, column: property.column, type };
+    }),
     scope: scopeFilters,
     public: scope.public,
     ...(entity.version === undefined ? {} : { version: entity.version }),
@@ -304,6 +317,35 @@ function classify(draftIn: EndpointDraft, scopes: ReadonlyMap<string, EntityScop
     freshness: { maxAgeSeconds: config.freshness[offlineClass] },
     ...(sync === undefined ? {} : { sync }),
   };
+}
+
+/** Columns written by a program that carry constraints only the database can verify. */
+function serverCheckedWrites(draft: EndpointDraft, entities: ReadonlyMap<string, EntityModel>, constraints?: ReadonlyMap<string, ReadonlyMap<string, ColumnConstraints>>): string[] {
+  if (constraints === undefined || draft.program === undefined) return [];
+  const out = new Set<string>();
+  const visit = (block: readonly Instr[]) => {
+    for (const instr of block) {
+      if (instr.op === 'IF') {
+        visit(instr.then);
+        visit(instr.else);
+      } else if (instr.op === 'INSERT' || instr.op === 'UPDATE') {
+        const entity = entities.get(instr.entity);
+        const table = constraints.get(instr.entity);
+        if (entity === undefined || table === undefined) continue;
+        for (const field of Object.keys(instr.values)) {
+          const column = entity.properties.get(field)?.column;
+          if (column === undefined) continue;
+          const checks = table.get(column)?.serverChecked ?? [];
+          // Unchanged values on UPDATE (the row's own value) cannot break a constraint.
+          const value = instr.values[field]!;
+          const unchanged = instr.op === 'UPDATE' && value.k === 'get' && value.field === field;
+          if (checks.length > 0 && !unchanged && !(field === entity.key && instr.op === 'INSERT' && checks.every((check) => check === 'UNIQUE'))) out.add(`${entity.table}.${column}`);
+        }
+      }
+    }
+  };
+  visit(draft.program);
+  return [...out].sort();
 }
 
 function containsQuery(program: readonly Instr[]): boolean {

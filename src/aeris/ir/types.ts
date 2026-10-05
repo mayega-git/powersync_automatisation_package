@@ -70,6 +70,8 @@ export interface FieldType {
   values?: readonly string[];
   /** For a list-valued field. */
   list?: boolean;
+  /** Database limit on string length (varchar(n)); longer values fail like the server. */
+  maxLength?: number;
 }
 
 // ---------------------------------------------------------------------------

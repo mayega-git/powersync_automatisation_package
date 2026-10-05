@@ -11,7 +11,7 @@ function sample(type: FieldType, name: string, seed: number): JsonValue {
   if (type.list === true) return [sample({ ...type, list: false }, name, seed)];
   switch (type.type) {
     case 'uuid': return uuid(seed);
-    case 'string': return `aeris-${name}`;
+    case 'string': return type.maxLength === undefined ? `aeris-${name}` : `aeris-${name}`.slice(0, Math.max(1, type.maxLength));
     case 'integer': return 1;
     case 'decimal': return 12.5;
     case 'boolean': return true;
@@ -73,7 +73,7 @@ export async function buildVectors(artifact: AerisArtifact, options: VectorConte
       }
       return out;
     };
-    const body = plan.input.body === undefined ? undefined : bodyFor(plan, context, seed++);
+    const body = plan.input.body === undefined ? undefined : bodyFor(plan, context, seed++, projections);
     const requests: { id: string; description: string; params: Record<string, string>; body?: JsonValue }[] = [
       { id: 'nominal', description: 'Request on data owned by the session', params: params(firstRead), ...(body === undefined ? {} : { body }) },
     ];
@@ -108,9 +108,15 @@ function row(projection: Projection, context: Record<string, JsonValue>, seed: n
   return out;
 }
 
-function bodyFor(plan: EndpointPlan, context: Record<string, JsonValue>, seed: number): JsonValue {
+function bodyFor(plan: EndpointPlan, context: Record<string, JsonValue>, seed: number, projections?: ReadonlyMap<string, Projection>): JsonValue {
   const out: Record<string, JsonValue> = {};
-  for (const [name, type] of Object.entries(plan.input.body!.fields)) {
+  // Column limits of the written entities also bound the body's strings.
+  const limits = new Map<string, number>();
+  for (const entity of plan.writes) {
+    for (const column of projections?.get(entity)?.columns ?? []) if (column.type.maxLength !== undefined) limits.set(column.name, column.type.maxLength);
+  }
+  for (const [name, fieldType] of Object.entries(plan.input.body!.fields)) {
+    const type = limits.has(name) && fieldType.maxLength === undefined ? { ...fieldType, maxLength: limits.get(name)! } : fieldType;
     out[name] = context[name] !== undefined ? context[name]! : sample(type, name, seed * 64 + Object.keys(out).length);
   }
   return out;

@@ -10,7 +10,7 @@ import { compileEndpoints } from './spring/endpoints.js';
 import { ExceptionHandlers } from './spring/errors.js';
 import { PersistenceModel } from './spring/persistence.js';
 import { buildVectors } from './vectors.js';
-import { checkProjections } from './schema-check.js';
+import { checkProjections, readConstraints } from './schema-check.js';
 
 export const SPRING_ADAPTER = { id: 'aeris.spring-boot', version: '1.0.0', language: 'java', framework: 'spring-boot-webflux' };
 
@@ -82,14 +82,15 @@ export async function build(options: BuildOptions): Promise<BuildResult> {
     ...(options.sourceCommit === undefined ? {} : { sourceCommit: options.sourceCommit }),
   });
   if (options.databaseUrl !== undefined) {
+    // Projections of every compiled entity, so constraints are known for all of them.
     const unavailableEntities = await checkProjections(options.databaseUrl, assembled.projections);
     for (const [entity, problem] of unavailableEntities) diagnostics.push(`schema: ${entity}: ${problem}`);
-    if (unavailableEntities.size > 0) {
-      assembled = assemble({
-        drafts, config, adapter: SPRING_ADAPTER, sourceRevision, diagnostics: [...diagnostics], previous, unavailableEntities,
-        ...(options.sourceCommit === undefined ? {} : { sourceCommit: options.sourceCommit }),
-      });
-    }
+    const allEntities = assemble({ drafts, config, adapter: SPRING_ADAPTER, sourceRevision, diagnostics: [], previous });
+    const constraints = await readConstraints(options.databaseUrl, allEntities.projections);
+    assembled = assemble({
+      drafts, config, adapter: SPRING_ADAPTER, sourceRevision, diagnostics: [...diagnostics], previous, unavailableEntities, constraints,
+      ...(options.sourceCommit === undefined ? {} : { sourceCommit: options.sourceCommit }),
+    });
   }
   const vectors = await buildVectors(assembled);
   const byEndpoint = new Map<string, string[]>();
