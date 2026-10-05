@@ -100,6 +100,8 @@ export interface AerisRuntimeOptions {
 }
 
 interface RuntimeStatus {
+  /** Browser storage usage, when the StorageManager API is available. */
+  storage?: { usage: number; quota: number; ratio: number };
   artifactVersion: number | undefined;
   online: boolean;
   lastSyncAt: number | undefined;
@@ -207,6 +209,9 @@ export class AerisRuntime {
       }
     });
     this.installTriggers();
+    // §8.5: ask the browser not to evict the outbox under storage pressure.
+    const storage = (globalThis as { navigator?: { storage?: { persist?: () => Promise<boolean> } } }).navigator?.storage;
+    void storage?.persist?.().catch(() => false);
     if (this.online()) await this.refresh().catch(() => undefined);
   }
 
@@ -970,7 +975,12 @@ export class AerisRuntime {
     }));
     const pending = entries.filter((entry) => PENDING_STATES.has(entry.state));
     const oldest = pending.reduce<number | undefined>((min, entry) => (min === undefined || entry.createdAt < min ? entry.createdAt : min), undefined);
+    const manager = (globalThis as { navigator?: { storage?: { estimate?: () => Promise<{ usage?: number; quota?: number }> } } }).navigator?.storage;
+    const estimate = await manager?.estimate?.().catch(() => undefined);
     return {
+      ...(estimate?.usage !== undefined && estimate.quota !== undefined && estimate.quota > 0
+        ? { storage: { usage: estimate.usage, quota: estimate.quota, ratio: estimate.usage / estimate.quota } }
+        : {}),
       artifactVersion: this.artifact?.artifactVersion,
       online: this.online(),
       lastSyncAt: typeof meta.lastSyncAt === 'number' ? meta.lastSyncAt : undefined,

@@ -371,6 +371,16 @@ function fluxCall(ev: Evaluator, source: FluxSV, name: string, args: SV[], node:
         const { list } = source.run(block);
         return { value: pure(op('size', list), T.long), empty: FALSE };
       });
+    case 'any':
+    case 'all':
+      return mono(T.boolean, (block) => {
+        const { list, element } = source.run(block);
+        const as = block.fresh('it');
+        const test = pureApply(ev, fn!, [element(vr(as))], block, node, scope, `Flux.${name}()`);
+        if (test.t !== 'pure') throw new Unsupported(`Flux.${name}() predicate is not boolean`, node);
+        const matching = op('size', { k: 'filter', of: list, as, body: name === 'any' ? test.e : not(test.e) });
+        return { value: pure(name === 'any' ? op('gt', matching, lit(0)) : op('eq', matching, lit(0)), T.boolean), empty: FALSE };
+      });
     case 'hasElements':
       return mono(T.boolean, (block) => {
         const { list } = source.run(block);

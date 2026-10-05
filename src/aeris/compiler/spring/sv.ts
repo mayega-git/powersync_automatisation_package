@@ -49,11 +49,33 @@ export const op = (name: Extract<Expr, { k: 'op' }>['op'], ...args: Expr[]): Exp
   if (name === 'coalesce' && a !== undefined && a.k === 'lit' && a.v !== null) return a;
   return { k: 'op', op: name, args };
 };
+const sizes = new WeakMap<object, number>();
+
+/** Number of nodes of an expression (memoized). */
+export function exprSize(expr: unknown): number {
+  if (expr === null || typeof expr !== 'object') return 1;
+  const cached = sizes.get(expr);
+  if (cached !== undefined) return cached;
+  let size = 1;
+  for (const value of Object.values(expr as Record<string, unknown>)) {
+    if (Array.isArray(value)) for (const item of value) size += exprSize(item);
+    else if (value !== null && typeof value === 'object') size += exprSize(value);
+    if (size > MAX_EXPRESSION_SIZE * 4) break;
+  }
+  sizes.set(expr, size);
+  return size;
+}
+
+/** Above this, an expression is a sign of combinatorial growth: refuse rather than emit it. */
+export const MAX_EXPRESSION_SIZE = 50_000;
+
 export const cond = (test: Expr, then: Expr, otherwise: Expr): Expr => {
   if (isLit(test, true)) return then;
   if (isLit(test, false)) return otherwise;
   if (exprEqual(then, otherwise)) return then;
-  return { k: 'cond', test, then, else: otherwise };
+  const result: Expr = { k: 'cond', test, then, else: otherwise };
+  if (exprSize(result) > MAX_EXPRESSION_SIZE) throw new Unsupported('The generated expression is too large (combinatorial branches).');
+  return result;
 };
 
 export function isLit(expr: Expr, value?: JsonValue): boolean {
@@ -61,6 +83,9 @@ export function isLit(expr: Expr, value?: JsonValue): boolean {
 }
 
 export function exprEqual(a: Expr, b: Expr): boolean {
+  if (a === b) return true;
+  const size = exprSize(a);
+  if (size !== exprSize(b) || size > 2_000) return false;
   return JSON.stringify(a) === JSON.stringify(b);
 }
 

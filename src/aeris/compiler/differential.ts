@@ -6,6 +6,7 @@ import { compareResults } from '../runtime/compare.js';
 import { AerisHttpError, Executor } from '../runtime/executor.js';
 import { MemoryStore } from '../runtime/store/MemoryStore.js';
 import { randomUuid } from '../runtime/values.js';
+import { evaluatePolicy, type PolicyBeans } from '../runtime/policy.js';
 import { buildVectors } from './vectors.js';
 
 export interface DifferentialOptions {
@@ -23,6 +24,8 @@ export interface DifferentialOptions {
   /** Also run mutations (only against a disposable environment). */
   writes?: boolean;
   maxKeysPerEndpoint?: number;
+  /** Implementations of the backend's authorization beans, as given to the runtime. */
+  policyBeans?: PolicyBeans;
   log?: (line: string) => void;
   fetch?: typeof fetch;
 }
@@ -81,6 +84,18 @@ export async function runDifferential(options: DifferentialOptions): Promise<Dif
       const mutation = plan.writes.length > 0;
       if (mutation && options.writes !== true) continue;
       summary.endpoints += 1;
+      // The runtime refuses endpoints whose authorization it cannot decide; so does the comparison.
+      let denied = false;
+      let undecidable: string | undefined;
+      for (const policy of plan.auth.policies ?? []) {
+        const decision = evaluatePolicy(policy, claims, options.policyBeans);
+        if (decision === undefined) undecidable = policy;
+        else if (!decision) denied = true;
+      }
+      if (undecidable !== undefined) {
+        summary.skipped.push({ endpoint: plan.id, reason: `authorization not decidable offline: ${undecidable}` });
+        continue;
+      }
       const cases = await requestsFor(plan, rows, reader, projections, claims, options.maxKeysPerEndpoint ?? 3, vectors.filter((vector) => vector.endpoint === plan.id));
       if (cases.skip !== undefined) {
         summary.skipped.push({ endpoint: plan.id, reason: cases.skip });
@@ -89,7 +104,8 @@ export async function runDifferential(options: DifferentialOptions): Promise<Dif
       for (const testCase of cases.requests) {
         const uuids = Array.from({ length: plan.uuidSlots }, () => randomUuid());
         let local: { status: number; body: JsonValue | null } = { status: 0, body: null };
-        try {
+        if (denied) local = { status: 403, body: null };
+        else try {
           await store.transaction(async (tx) => {
             try {
               const result = await executor.execute(plan, {

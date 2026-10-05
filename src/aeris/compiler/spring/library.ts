@@ -161,6 +161,7 @@ export function libraryStatic(ev: Evaluator, fqn: string, name: string, args: SV
     case 'List':
       if (name === 'of') return listOf(ev, args, args[0]?.t === 'pure' ? args[0].jt : T.object);
       if (name === 'copyOf' && args.length === 1 && args[0]!.t === 'list') return args[0]!;
+      if (name === 'copyOf' && args.length === 1 && args[0]!.t === 'obj') return ev.asList(args[0], node, scope);
       break;
     case 'Set':
       // Immutable sets: membership semantics; iteration order is unspecified in Java as well.
@@ -172,6 +173,7 @@ export function libraryStatic(ev: Evaluator, fqn: string, name: string, args: SV
         if (literals.some((item) => item === undefined) && args.length > 1) throw new Unsupported('Set.of() over dynamic values may reject duplicates', node);
         return listOf(ev, args, args[0]?.t === 'pure' ? args[0].jt : T.object);
       }
+      if (name === 'copyOf' && args.length === 1 && args[0]!.t === 'obj' && args[0].cls === 'aeris.MutableSet') return ev.asList(args[0], node, scope);
       if (name === 'copyOf' && args.length === 1 && args[0]!.t === 'list') throw new Unsupported('Set.copyOf() removes duplicates', node);
       break;
     case 'Map':
@@ -192,6 +194,7 @@ export function libraryStatic(ev: Evaluator, fqn: string, name: string, args: SV
       break;
     case 'Arrays':
       if (name === 'asList') return listOf(ev, args, args[0]?.t === 'pure' ? args[0].jt : T.object);
+      if (name === 'stream' && args.length === 1 && args[0]!.t === 'list') return args[0]!;
       break;
     case 'Math':
       if ((name === 'max' || name === 'min') && args.length === 2) return pure(op(name, arg(0), arg(1)), (args[0] as { jt: JType }).jt);
@@ -355,11 +358,32 @@ function monoStatic(ev: Evaluator, name: string, args: SV[], node: SyntaxNode, s
       }
       break;
     case 'zip':
+      if (args.length >= 2 && (args[0]!.t === 'lambda' || args[0]!.t === 'mref') && args.slice(1).every((arg) => arg.t === 'mono')) {
+        const combinator = args[0]!;
+        const sources = args.slice(1) as MonoSV[];
+        return mono(T.object, (block) => {
+          const emissions: Emission[] = sources.map((source) => source.run(block));
+          const empty = emissions.reduce<Expr>((acc, emission) => (isLit(acc, false) ? emission.empty : isLit(emission.empty, false) ? acc : op('or', acc, emission.empty)), FALSE);
+          const combined = (child: typeof block) => ({ value: ev.apply(combinator, [{ t: 'tuple', items: emissions.map((emission) => emission.value) }], child, node, scope), empty: FALSE });
+          if (isLit(empty, false)) return combined(block);
+          return branch(block, not(empty), combined, () => ({ value: VOID, empty: TRUE }), (t, a, b) => mergeEmission(t, a, b, (t2, x, y) => ev.merge(t2, x, y)));
+        });
+      }
       if (args.length >= 2 && args.every((arg) => arg.t === 'mono')) {
         return mono(T.object, (block) => {
           const emissions: Emission[] = (args as MonoSV[]).map((arg) => arg.run(block));
           const empty = emissions.reduce<Expr>((acc, emission) => (isLit(acc, false) ? emission.empty : isLit(emission.empty, false) ? acc : op('or', acc, emission.empty)), FALSE);
           return { value: { t: 'tuple', items: emissions.map((emission) => emission.value) }, empty };
+        });
+      }
+      break;
+    case 'deferContextual':
+      if (args.length === 1) {
+        // Only the configured context sources may read the Reactor Context.
+        return mono(T.object, (block) => {
+          const inner = ev.apply(args[0]!, [{ t: 'opaque', what: 'Reactor ContextView' }], block, node, scope);
+          if (inner.t !== 'mono') throw new Unsupported('Mono.deferContextual() function does not return a Mono', node);
+          return inner.run(block);
         });
       }
       break;
@@ -573,6 +597,16 @@ function listMethod(ev: Evaluator, receiver: ListSV, name: string, args: SV[], n
     return { as, value: probe.outcome.value };
   };
   switch (`${name}/${args.length}`) {
+    case 'forEach/1': {
+      const fn = args[0]!;
+      ev.foldLoop(receiver, (env, item) => env.define('__aeris_each__', item), (inner) => {
+        ev.apply(fn, [inner.env.get('__aeris_each__')!], inner.block, node, inner);
+      }, node, scope);
+      return { t: 'void' };
+    }
+    case 'findFirst/0':
+    case 'findAny/0':
+      return { t: 'optional', value: element(op('first', receiver.e)), present: not(op('isEmpty', receiver.e)) };
     case 'sorted/1':
     case 'sort/1':
       return { ...receiver, e: sortExpr(ev, receiver.e, element, args[0]!, node, scope) };

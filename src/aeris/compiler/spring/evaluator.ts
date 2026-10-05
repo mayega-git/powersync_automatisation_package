@@ -11,6 +11,7 @@ import {
   and,
   Block,
   cond,
+  exprSize,
   describe,
   Env,
   ExternalEffect,
@@ -270,7 +271,13 @@ export class Evaluator {
     throw new Unsupported(`Cannot merge ${describe(a)} and ${describe(b)} across a condition.`);
   }
 
-  private mergeObjectStates(test: Expr, before: Map<ObjSV, Map<string, SV>>, left: Map<ObjSV, Map<string, SV>>, right: Map<ObjSV, Map<string, SV>>): void {
+  /** Binds a large merged value to a variable so later merges reference it instead of copying it. */
+  compact(value: SV, block: Block | undefined): SV {
+    if (block === undefined || value.t !== 'pure' || exprSize(value.e) < 48) return value;
+    return pure(block.bind(value.e, 'merged'), value.jt);
+  }
+
+  private mergeObjectStates(test: Expr, before: Map<ObjSV, Map<string, SV>>, left: Map<ObjSV, Map<string, SV>>, right: Map<ObjSV, Map<string, SV>>, block?: Block): void {
     for (const [target] of before) {
       const a = left.get(target) ?? new Map();
       const b = right.get(target) ?? new Map();
@@ -285,7 +292,7 @@ export class Evaluator {
         }
         const left2 = va ?? this.fallbackField(target, name);
         const right2 = vb ?? this.fallbackField(target, name);
-        target.fields.set(name, this.merge(test, left2, right2));
+        target.fields.set(name, this.compact(this.merge(test, left2, right2), block));
       }
     }
   }
@@ -420,13 +427,22 @@ export class Evaluator {
       }
     }
 
-    // Pure accumulation: discover what the body changes, then fold.
+    this.foldLoop(iterable, (env, item) => env.define(name, retype(item, declared)), (inner) => this.statements(bodyStatements, 0, inner), node, scope);
+    return this.statements(nodes, index + 1, scope);
+  }
+
+  /**
+   * Compiles a side-effect-free loop over a symbolic list into a fold: a dry
+   * run discovers which outer variables and object fields the body changes,
+   * a second run expresses their next values over the accumulator.
+   */
+  foldLoop(iterable: ListSV, bind: (env: Env, item: SV) => void, body: (scope: Scope) => Completion | void, node: SyntaxNode, scope: Scope): void {
     const before = snapshotObjects(this.objects);
     const outer = new Map(scope.env.localNames().map((key) => [key, scope.env.get(key)!]));
     const dryEnv = scope.env.fork();
     const dry = dryEnv.child();
-    dry.define(name, retype(iterable.element(vr('__aeris_probe__')), declared));
-    const dryRun = attempt(scope.block, (block) => this.statements(bodyStatements, 0, { ...scope, env: dry, block }));
+    bind(dry, iterable.element(vr('__aeris_probe__')));
+    const dryRun = attempt(scope.block, (block) => body({ ...scope, env: dry, block }) ?? { kind: 'normal' as const });
     const changedVars = [...outer.keys()].filter((key) => dryEnv.get(key) !== outer.get(key));
     const changedFields: { target: ObjSV; field: string }[] = [];
     for (const [target, fields] of before) {
@@ -436,6 +452,7 @@ export class Evaluator {
     if (!dryRun.outcome.ok || dryRun.outcome.value.kind !== 'normal' || dryRun.instrs.length > 0) {
       this.fail('Loop body has effects or early exits', node, scope);
     }
+    if (changedVars.length === 0 && changedFields.length === 0) return;
     const as = scope.block.fresh('it');
     const acc = scope.block.fresh('acc');
     const slots = [
@@ -448,16 +465,14 @@ export class Evaluator {
     ];
     const kinds = new Map(slots.map((slot) => [slot.slot, slot.read()]));
     const init: Expr = { k: 'object', fields: Object.fromEntries(slots.map((slot) => [slot.slot, this.encode(slot.read())])) };
-    // Second run with accumulator placeholders.
     for (const slot of slots) slot.write(this.reView(kinds.get(slot.slot)!, getf(vr(acc), slot.slot)));
     const env = scope.env.child();
-    env.define(name, retype(iterable.element(vr(as)), declared));
-    const wet = attempt(scope.block, (block) => this.statements(bodyStatements, 0, { ...scope, env, block }));
+    bind(env, iterable.element(vr(as)));
+    const wet = attempt(scope.block, (block) => body({ ...scope, env, block }) ?? { kind: 'normal' as const });
     if (!wet.outcome.ok || wet.outcome.value.kind !== 'normal' || wet.instrs.length > 0) this.fail('Loop body has effects or early exits', node, scope);
     const next: Expr = { k: 'object', fields: Object.fromEntries(slots.map((slot) => [slot.slot, this.encode(slot.read())])) };
     const folded = scope.block.bind({ k: 'fold', of: iterable.e, as, acc, init, body: next }, 'loop');
     for (const slot of slots) slot.write(this.reView(kinds.get(slot.slot)!, getf(folded, slot.slot)));
-    return this.statements(nodes, index + 1, scope);
   }
 
   /** Re-expresses a value of the same shape as `like` over a new expression. */
@@ -601,9 +616,9 @@ export class Evaluator {
     const elseNormal = elseSide.outcome.ok && elseSide.outcome.value.kind === 'normal';
 
     if (thenNormal && elseNormal) {
-      this.mergeObjectStates(test, before, thenObjects, elseObjects);
-      this.mergeEnv(scope.env, test, thenEnv, elseEnv);
       emitIf(scope.block, test, thenSide.instrs, elseSide.instrs);
+      this.mergeObjectStates(test, before, thenObjects, elseObjects, scope.block);
+      this.mergeEnv(scope.env, test, thenEnv, elseEnv, scope.block);
       return this.statements(nodes, index + 1, scope);
     }
     if (!thenSide.outcome.ok && elseNormal) {
@@ -656,12 +671,12 @@ export class Evaluator {
     return { kind: 'return', value: this.merge(test, a, b) };
   }
 
-  private mergeEnv(env: Env, test: Expr, left: Env, right: Env): void {
+  private mergeEnv(env: Env, test: Expr, left: Env, right: Env, block?: Block): void {
     for (const name of env.localNames()) {
       const a = left.get(name);
       const b = right.get(name);
       if (a === undefined || b === undefined) continue;
-      if (a !== b) env.assign(name, this.merge(test, a, b));
+      if (a !== b) env.assign(name, this.compact(this.merge(test, a, b), block));
     }
   }
 
@@ -735,6 +750,15 @@ export class Evaluator {
         return this.methodReference(node, scope);
       case 'assignment_expression':
         return this.assignment(node, scope);
+      case 'array_access': {
+        const array = this.expr(field(node, 'array')!, scope);
+        const index = this.expr(field(node, 'index')!, scope);
+        if (array.t === 'tuple' && index.t === 'pure' && index.e.k === 'lit' && typeof index.e.v === 'number') {
+          const item = array.items[index.e.v];
+          if (item !== undefined) return item;
+        }
+        this.fail('Array access is not supported', node, scope);
+      }
       case 'switch_expression':
         return this.switchExpression(node, scope);
       case 'instanceof_expression':
@@ -1225,6 +1249,7 @@ export class Evaluator {
       case 'builder':
         return this.builderCall(receiver, name, args, node, scope);
       case 'pure': {
+        if (isListType(receiver.jt) && receiver.jt.array === 0) return this.dispatch(this.asList(receiver, node, scope), name, args, node, scope);
         const decl = this.project.type(receiver.jt.name);
         if (decl !== undefined && (decl.kind === 'class' || decl.kind === 'record')) {
           return this.objectCall(obj(decl.fqn, new Map(), receiver.e), name, args, node, scope);
@@ -1485,7 +1510,11 @@ export class Evaluator {
         if (statics.length > 0) return this.call({ t: 'type', fqn: type }, fn.name, args, node, inner);
       }
       if (args.length === 0) this.fail(`Unbound method reference ${type}::${fn.name} without receiver`, node, scope);
-      const [first, ...rest] = args;
+      const [firstIn, ...rest] = args;
+      // Type::method fixes the receiver's static type, as javac does.
+      const first = firstIn!.t === 'pure' && (firstIn!.jt.name === 'java.lang.Object' || firstIn!.jt.unresolved === true)
+        ? { ...firstIn!, jt: { name: type, args: [], array: 0 } } as SV
+        : firstIn!;
       if (decl === undefined) {
         const staticAttempt = libraryStaticTry(this, type, fn.name, args, node, inner);
         if (staticAttempt !== undefined) return staticAttempt;
