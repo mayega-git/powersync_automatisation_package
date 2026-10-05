@@ -33,10 +33,13 @@ horodatages capturés sont comparés par leur forme. `--writes` ajoute les mutat
 Les claims passés en `--claims` doivent correspondre exactement à ce que le backend
 dérive du jeton (tenant, organisation, utilisateur…).
 
-Résultat obtenu sur la copie du backend : réponses identiques (corps compris) pour
-les lectures de points de vente sur données réelles, y compris le `404` sur un
-identifiant inconnu. Les autres modules exigent un jeton utilisateur avec permissions
-pour être comparés.
+Résultat obtenu sur la copie du backend (session client d'API, sans utilisateur) :
+232 endpoints locaux, 204 requêtes comparées, **204 identiques, 0 divergence** — dont
+des `200` avec données réelles (points de vente, vendeurs, plans commerciaux,
+portefeuilles, catalogue produit…), des `404` sur identifiants inconnus ou hors
+périmètre, et des `403` où la politique compilée refuse exactement comme le serveur.
+Avec un jeton utilisateur portant des permissions, les mêmes endpoints sont comparés
+sur leurs données.
 
 ## Démonstration de bout en bout sur le backend réel
 

@@ -87,8 +87,18 @@ export async function runDifferential(options: DifferentialOptions): Promise<Dif
       // The runtime refuses endpoints whose authorization it cannot decide; so does the comparison.
       let denied = false;
       let undecidable: string | undefined;
+      const compiled = new Map((plan.auth.checks ?? []).map((check) => [check.policy, check.test]));
       for (const policy of plan.auth.policies ?? []) {
-        const decision = evaluatePolicy(policy, claims, options.policyBeans);
+        const test = compiled.get(policy);
+        let decision: boolean | undefined;
+        if (test !== undefined) {
+          try {
+            decision = executor.check(plan, test, claims);
+          } catch (error) {
+            decision = error instanceof AerisHttpError ? false : undefined;
+          }
+        }
+        if (decision === undefined) decision = evaluatePolicy(policy, claims, options.policyBeans);
         if (decision === undefined) undecidable = policy;
         else if (!decision) denied = true;
       }

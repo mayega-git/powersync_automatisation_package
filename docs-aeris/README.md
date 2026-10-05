@@ -84,22 +84,27 @@ const { runtime } = await createBrowserRuntime({
 
 ## Résultat sur le backend réel (copie `iwm-backend`)
 
-Mesures sur la copie du backend (4 389 fichiers Java, 1 953 endpoints), artefact v3 :
+Mesures sur la copie du backend (4 389 fichiers Java, 1 953 endpoints) :
 
 | Classe | Endpoints | Sens |
 |---|---|---|
-| `LOCAL_READ_SAFE` | 220 | Lectures servies localement, prouvées limitées au périmètre de session |
+| `LOCAL_READ_SAFE` | 232 | Lectures servies localement, prouvées limitées au périmètre de session |
 | `REPLAYABLE` | 60 | Écritures sans lecture d'état partagé, rejouées une fois |
-| `SPECULATIVE` | 148 | Écritures dépendant de données partagées : provisoires, revalidées par le serveur |
-| `ONLINE_REQUIRED` | 182 | Effet externe, lecture non bornée au périmètre, pas d'idempotence… |
-| `UNSUPPORTED` | 1 343 | Le compilateur n'a pas pu prouver la sémantique (raison précise dans le rapport) |
+| `SPECULATIVE` | 171 | Écritures dépendant de données partagées : provisoires, revalidées par le serveur |
+| `ONLINE_REQUIRED` | 186 | Effet externe, lecture non bornée au périmètre, pas d'idempotence… |
+| `UNSUPPORTED` | 1 304 | Le compilateur n'a pas pu prouver la sémantique (raison précise dans le rapport) |
 
-- **428 endpoints utilisables hors ligne**, tous accompagnés de preuves (fichier/ligne/hash).
+- **463 endpoints utilisables hors ligne**, tous accompagnés de preuves (fichier/ligne/hash).
+- **Autorisations compilées** : les 424 endpoints locaux protégés par
+  `@PreAuthorize("@businessAccessPolicy…")` ont leur politique compilée depuis le code Java.
 - **160 projections sur 161** déduites du code correspondent exactement au schéma
   PostgreSQL réel ; la 161ᵉ (`tp.crm_action`) diverge réellement du code Java et est
   automatiquement exclue (`aeris analyze --database`).
-- **Parité différentielle** vérifiée contre le backend Spring en fonctionnement
-  (réponses identiques, corps compris, sur données réelles) — voir [tests.md](tests.md).
+- **Parité différentielle** contre le backend Spring en fonctionnement : 204 requêtes
+  sur 232 endpoints, **204 identiques, 0 divergence** (statut et corps, données réelles,
+  autorisations comprises) — voir [tests.md](tests.md).
+- **Démonstration réelle** : création et modification hors ligne, rejeu via la Gateway,
+  identifiant serveur remappé, convergence (`example/aeris-real-backend-demo.ts`).
 - `GET /api/sales-points` est classé `ONLINE_REQUIRED` : le compilateur a détecté que
   ce handler peut renvoyer des lignes d'autres organisations (`findAll()` sans filtre)
   — ce qui est vérifiable sur le backend réel.
