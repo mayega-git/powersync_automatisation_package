@@ -4,44 +4,10 @@ Module offline-first (`@ksm/offline-sync`) : interception des requêtes HTTP,
 base locale, rejeu différé, branché sur le moteur de synchronisation
 PowerSync.
 
-Le sous-module expérimental `@ksm/offline-sync/aeris` définit un format IR
-commun, un contrat d'adaptateur, la découverte des routes Spring MVC annotées
-et une classification conservatrice. L'adaptateur Spring parse le Java en CST
-et résout certains appels vers les méthodes de classes et d'interfaces du
-projet. Il reconnaît aussi un sous-ensemble explicite d'opérateurs Reactor
-`Mono`/`Flux` lorsque le type statique est connu et conserve les annotations
-d'autorisation Spring restrictives comme preuves dans l'IR. Il ne résout pas
-encore complètement les types, l'héritage, le dispatch dynamique, les accès
-aux données ni les effets métier ; aucun plan local exécutable n'est produit
-et les routes restent `UNSUPPORTED`.
-Cette API est destinée au build-time côté Node.js, pas au bundle navigateur.
-
-Pour générer un premier rapport d’analyse depuis un backend Spring Boot :
-
-```bash
-npx aeris analyze ./chemin/vers/backend
-```
-
-Pour signer l’IR en CI avec une clé Ed25519 :
-
-```bash
-npx aeris analyze ./chemin/vers/backend \
-  --signing-key "$AERIS_SIGNING_PRIVATE_KEY_FILE" \
-  --key-id "aeris-prod-2026"
-```
-
-La signature est optionnelle pour les rapports de développement. Le vérificateur
-doit associer le `keyId` à une clé publique obtenue par un canal de confiance ;
-la clé publique n’est pas embarquée dans l’enveloppe et ne doit pas être
-remplacée par une clé simplement fournie avec l’artefact.
-
-La commande écrit `.aeris/aeris-ir.json` dans le backend et calcule une
-empreinte SHA-256 des sources Java analysées. Les dossiers générés et les
-répertoires de dépendances sont ignorés. À ce stade, la découverte des routes
-est disponible, avec un graphe d'appels source partiel. Le format signé protège
-l’intégrité et l’origine de l’IR, mais ne prouve pas à lui seul la justesse de
-l’analyse. Les routes restent `UNSUPPORTED` tant que leur sémantique complète
-n’est pas démontrée.
+Le sous-module **AERIS** (`@ksm/offline-sync/aeris`, `…/aeris/compiler`,
+`…/aeris/gateway`, CLI `aeris`) compile le comportement du backend Spring Boot en
+programmes locaux signés, les exécute dans le navigateur hors ligne et les réconcilie
+via une Sync Gateway. Documentation : [docs-aeris/README.md](docs-aeris/README.md).
 
 ## Installation
 
