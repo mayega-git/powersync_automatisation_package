@@ -27,6 +27,9 @@ export async function detectConfig(rootDir: string, files: readonly SourceFile[]
       const optional = payload.name === 'java.util.Optional';
       const record = project.type(optional ? payload.args[0]?.name ?? '' : payload.name);
       if (record === undefined || (record.kind !== 'record' && record.kind !== 'class')) continue;
+      // A session carries identities (tenant, organization, user...), not request metadata.
+      const components = record.kind === 'record' ? record.recordComponents : record.fields;
+      if (!components.some((component) => component.type.name === 'java.util.UUID' && /tenant|organi[sz]ation|user|actor|account/i.test(component.name))) continue;
       sources.push({ method: `${type.simple}.${method.name}`, kind: optional ? 'optional' : 'required', type: record.fqn });
     }
   }

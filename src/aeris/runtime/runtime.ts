@@ -297,11 +297,15 @@ export class AerisRuntime {
    * Routes one request: to the network when possible, to the local plan when
    * the network is unavailable and the endpoint's class allows it.
    */
-  async handle(request: RuntimeRequest): Promise<RuntimeResponse> {
+  async handle(request: RuntimeRequest, via?: { network?: (request: RuntimeRequest) => Promise<RuntimeResponse> }): Promise<RuntimeResponse> {
+    const network = (outgoing: RuntimeRequest) => {
+      this.metrics.networkRequests += 1;
+      return via?.network !== undefined ? via.network(outgoing) : this.options.transport.network(outgoing);
+    };
     const target = this.locate(request.url);
     const match = target === undefined ? undefined : this.router?.match(request.method, target.path);
     if (target === undefined || match === undefined || this.artifact === undefined) {
-      return this.network(request);
+      return network(request);
     }
     const plan = match.plan;
     const mutation = plan.writes.length > 0 || !['GET', 'HEAD'].includes(plan.method);
@@ -316,7 +320,7 @@ export class AerisRuntime {
         if (local !== undefined) return local;
       }
       try {
-        const response = await this.network(outbound);
+        const response = await network(outbound);
         if (this.shadowEnabled(plan.id) && response.status < 500) {
           void this.shadow(plan, match.params, target.query, request, response).catch(() => undefined);
         }
@@ -357,11 +361,6 @@ export class AerisRuntime {
       if (!(key in query)) query[key] = value;
     });
     return { path, query };
-  }
-
-  private async network(request: RuntimeRequest): Promise<RuntimeResponse> {
-    this.metrics.networkRequests += 1;
-    return this.options.transport.network(request);
   }
 
   private async localDecision(plan: EndpointPlan): Promise<{ allowed: true } | { allowed: false; reason: string }> {

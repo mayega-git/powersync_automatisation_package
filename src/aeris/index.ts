@@ -34,3 +34,13 @@ export { SqlStore } from './runtime/store/SqlStore.js';
 export { IndexedDbStore } from './runtime/store/IndexedDbStore.js';
 export { BetterSqliteDatabase, type BetterSqliteLike } from './runtime/store/BetterSqliteDatabase.js';
 export { castValue, formatNow, valuesEqual, compareValues } from './runtime/values.js';
+export { evaluatePolicy, authoritiesOf, type PolicyBeans } from './runtime/policy.js';
+export {
+  AERIS_CHANNEL,
+  connectAerisServiceWorker,
+  createBrowserRuntime,
+  installAerisFetch,
+  type BrowserRuntimeOptions,
+  type InstallFetchOptions,
+} from './runtime/browser.js';
+export { prettyExpr, prettyProgram, explainPlan } from './ir/pretty.js';

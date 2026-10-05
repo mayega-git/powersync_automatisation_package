@@ -1,7 +1,7 @@
 {
   "name": "@ksm/offline-sync",
   "version": "0.1.0",
-  "description": "Adaptateur offline-first HTTP <-> SQL local (PowerSync) pour les clients KSM.",
+  "description": "Offline-first web runtime: AERIS behavior compiler (Spring Boot), deterministic browser runtime and Sync Gateway, plus the PowerSync HTTP adapter.",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -30,6 +30,21 @@
       "types": "./dist/aeris/index.d.ts",
       "import": "./dist/aeris/index.js",
       "default": "./dist/aeris/index.js"
+    },
+    "./aeris/compiler": {
+      "types": "./dist/aeris/compiler/index.d.ts",
+      "import": "./dist/aeris/compiler/index.js",
+      "default": "./dist/aeris/compiler/index.js"
+    },
+    "./aeris/gateway": {
+      "types": "./dist/aeris/gateway/index.d.ts",
+      "import": "./dist/aeris/gateway/index.js",
+      "default": "./dist/aeris/gateway/index.js"
+    },
+    "./aeris/sw": {
+      "types": "./dist/aeris/sw.d.ts",
+      "import": "./dist/aeris/sw.js",
+      "default": "./dist/aeris/sw.js"
     }
   },
   "files": [
@@ -37,20 +52,26 @@
   ],
   "sideEffects": false,
   "scripts": {
-    "prepare": "tsc -p tsconfig.build.json && tsc -p tsconfig.ui.build.json",
-    "build": "tsc -p tsconfig.build.json && tsc -p tsconfig.ui.build.json",
+    "prepare": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.build.json && tsc -p tsconfig.ui.build.json",
+    "build": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.build.json && tsc -p tsconfig.ui.build.json",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.ui.json --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
     "example": "tsx example/main.ts",
-    "cli": "tsx src/init/bin.ts"
+    "cli": "tsx src/init/bin.ts",
+    "aeris": "tsx src/aeris/cli/bin.ts",
+    "test:integration": "AERIS_TEST_DATABASE_URL=${AERIS_TEST_DATABASE_URL:-postgres://aeris:aeris@127.0.0.1:15433/aeris} vitest run test/aeris/gateway"
   },
   "keywords": [
+    "aeris",
+    "compiler",
     "offline-first",
-    "sync",
-    "powersync",
     "openapi",
-    "rebase"
+    "powersync",
+    "rebase",
+    "spring-boot",
+    "sync",
+    "sync-gateway"
   ],
   "author": "KSM",
   "license": "UNLICENSED",
@@ -82,7 +103,7 @@
   },
   "bin": {
     "offline-sync": "./dist/init/bin.js",
-    "aeris": "./dist/aeris/bin.js"
+    "aeris": "./dist/aeris/cli/bin.js"
   },
   "peerDependenciesMeta": {
     "@powersync/service-sync-rules": {

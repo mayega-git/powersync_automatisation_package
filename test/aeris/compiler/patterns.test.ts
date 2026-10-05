@@ -1,0 +1,222 @@
+import { describe, expect, it } from 'vitest';
+import { compileJava, endpoint, run } from './helpers.js';
+
+const PERSISTABLE = `
+package demo.common;
+import java.time.Instant;
+import java.util.UUID;
+import org.springframework.data.domain.Persistable;
+public interface PersistableEntity extends Persistable<UUID> {
+  UUID id();
+  Instant createdAt();
+  Instant updatedAt();
+  @Override default UUID getId() { return id(); }
+  @Override default boolean isNew() {
+    Instant createdAt = createdAt();
+    return createdAt == null || createdAt.equals(updatedAt());
+  }
+}
+`;
+
+const LINE_ENTITY = `
+package demo.orders;
+import demo.common.PersistableEntity;
+import java.math.BigDecimal;
+import java.time.Instant;
+import java.util.UUID;
+import org.springframework.data.annotation.Id;
+import org.springframework.data.relational.core.mapping.Table;
+@Table(schema = "orders", name = "order_line")
+public record LineEntity(@Id UUID id, UUID tenantId, UUID orderId, String label, BigDecimal amount, String kind,
+    Instant createdAt, Instant updatedAt) implements PersistableEntity {}
+`;
+
+const KIND = `
+package demo.orders;
+public enum LineKind {
+  GOODS("G", 1), SERVICE("S", 2);
+  private final String code;
+  private final int weight;
+  LineKind(String code, int weight) { this.code = code; this.weight = weight; }
+  public String code() { return code; }
+  public int weight() { return weight; }
+}
+`;
+
+const LINE = `
+package demo.orders;
+import java.math.BigDecimal;
+import java.util.UUID;
+public record Line(UUID id, UUID orderId, String label, BigDecimal amount, LineKind kind) {
+  public Line {
+    if (label == null || label.isBlank()) throw new IllegalArgumentException("label is required");
+  }
+}
+`;
+
+const PORT = `
+package demo.orders;
+import java.util.UUID;
+import reactor.core.publisher.Flux;
+public interface LinePort {
+  Flux<Line> forOrder(UUID tenantId, UUID orderId);
+}
+`;
+
+const ADAPTER = `
+package demo.orders;
+import static org.springframework.data.relational.core.query.Criteria.where;
+import java.util.UUID;
+import org.springframework.data.r2dbc.core.R2dbcEntityTemplate;
+import org.springframework.data.relational.core.query.Query;
+import org.springframework.stereotype.Component;
+import reactor.core.publisher.Flux;
+@Component
+public class LineAdapter implements LinePort {
+  private final R2dbcEntityTemplate template;
+  public LineAdapter(R2dbcEntityTemplate template) { this.template = template; }
+  @Override public Flux<Line> forOrder(UUID tenantId, UUID orderId) {
+    return template.select(Query.query(where("tenant_id").is(tenantId).and("order_id").is(orderId)), LineEntity.class)
+        .map(LineAdapter::toDomain);
+  }
+  private static Line toDomain(LineEntity e) {
+    LineKind kind;
+    try {
+      kind = LineKind.valueOf(e.kind());
+    } catch (IllegalArgumentException unknown) {
+      kind = LineKind.GOODS;
+    }
+    return new Line(e.id(), e.orderId(), e.label(), e.amount(), kind);
+  }
+}
+`;
+
+const SUMMARY = `
+package demo.orders;
+import java.math.BigDecimal;
+import java.util.List;
+public record OrderSummary(int count, BigDecimal total, String heaviest, List<String> labels) {}
+`;
+
+const SERVICE = `
+package demo.orders;
+import demo.kernel.RequestContextHolder;
+import java.math.BigDecimal;
+import java.math.RoundingMode;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.List;
+import java.util.UUID;
+import org.springframework.stereotype.Service;
+import reactor.core.publisher.Mono;
+@Service
+public class OrderService {
+  private final LinePort lines;
+  public OrderService(LinePort lines) { this.lines = lines; }
+  public Mono<OrderSummary> summary(UUID orderId) {
+    return RequestContextHolder.getRequiredContext().flatMap(ctx -> lines.forOrder(ctx.tenantId(), orderId)
+        .sort(Comparator.comparing(Line::label))
+        .collectList()
+        .map(this::summarize));
+  }
+  private OrderSummary summarize(List<Line> items) {
+    BigDecimal total = BigDecimal.ZERO;
+    int heaviest = 0;
+    String heaviestLabel = null;
+    List<String> labels = new ArrayList<>();
+    for (Line line : items) {
+      total = total.add(line.amount());
+      labels.add(line.label() + "/" + line.kind().code());
+      if (line.kind().weight() > heaviest) {
+        heaviest = line.kind().weight();
+        heaviestLabel = line.label();
+      }
+    }
+    String band = switch (items.size()) {
+      case 0 -> "empty";
+      case 1, 2 -> "small";
+      default -> "large";
+    };
+    return new OrderSummary(items.size(), total.setScale(2, RoundingMode.HALF_UP), heaviestLabel == null ? band : heaviestLabel, labels);
+  }
+}
+`;
+
+const CONTROLLER = `
+package demo.orders;
+import java.util.UUID;
+import org.springframework.web.bind.annotation.*;
+import org.springframework.web.reactive.function.client.WebClient;
+import reactor.core.publisher.Mono;
+@RestController
+@RequestMapping("/api/orders")
+public class OrderController {
+  private final OrderService service;
+  private final WebClient payments;
+  private final java.util.Map<UUID, String> cache = new java.util.HashMap<>();
+  public OrderController(OrderService service, WebClient payments) { this.service = service; this.payments = payments; }
+  @GetMapping("/{orderId}/summary") public Mono<OrderSummary> summary(@PathVariable UUID orderId) { return service.summary(orderId); }
+  @PostMapping("/{orderId}/pay") public Mono<String> pay(@PathVariable UUID orderId) {
+    return payments.post().uri("/pay/" + orderId).retrieve().bodyToMono(String.class);
+  }
+  @GetMapping("/{orderId}/cached") public Mono<String> cached(@PathVariable UUID orderId) { return Mono.justOrEmpty(cache.get(orderId)); }
+}
+`;
+
+const SOURCES = {
+  'demo/common/PersistableEntity.java': PERSISTABLE,
+  'demo/orders/LineEntity.java': LINE_ENTITY,
+  'demo/orders/LineKind.java': KIND,
+  'demo/orders/Line.java': LINE,
+  'demo/orders/LinePort.java': PORT,
+  'demo/orders/LineAdapter.java': ADAPTER,
+  'demo/orders/OrderSummary.java': SUMMARY,
+  'demo/orders/OrderService.java': SERVICE,
+  'demo/orders/OrderController.java': CONTROLLER,
+};
+
+const TENANT = '11111111-1111-4111-8111-111111111111';
+const ORDER = '33333333-3333-4333-8333-333333333333';
+const line = (id: number, label: string, amount: number, kind: string, tenantId = TENANT) => ({
+  id: `00000000-0000-4000-8000-00000000000${id}`, tenantId, orderId: ORDER, label, amount, kind, createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-01T00:00:00Z',
+});
+
+describe('compiler on hexagonal code', () => {
+  it('compiles ports, template criteria, records, loops, sort, switch, try/catch and enum fields', async () => {
+    const artifact = await compileJava(SOURCES);
+    const plan = endpoint(artifact, 'GET /api/orders/{orderId}/summary');
+    expect(plan.offlineClass, plan.reasons.join('; ')).toBe('LOCAL_READ_SAFE');
+    const rows = {
+      'demo.orders.LineEntity': [
+        line(1, 'b-bolt', 1.105, 'SERVICE'),
+        line(2, 'a-axle', 10.2, 'GOODS'),
+        line(3, 'c-cable', 0.1, 'LEGACY'),
+        line(4, 'z-foreign', 999, 'GOODS', '22222222-2222-4222-8222-222222222222'),
+      ],
+    };
+    const result = await run(artifact, 'GET /api/orders/{orderId}/summary', rows, { params: { orderId: ORDER }, context: { tenantId: TENANT } });
+    expect(result).toEqual({
+      status: 200,
+      body: { count: 3, total: 11.41, heaviest: 'b-bolt', labels: ['a-axle/G', 'b-bolt/S', 'c-cable/G'] },
+    });
+    const empty = await run(artifact, 'GET /api/orders/{orderId}/summary', {}, { params: { orderId: ORDER }, context: { tenantId: TENANT } });
+    expect(empty.body).toEqual({ count: 0, total: 0, heaviest: 'empty', labels: [] });
+  });
+
+  it('propagates domain invariants of mapped rows as errors', async () => {
+    const artifact = await compileJava(SOURCES);
+    const broken = { 'demo.orders.LineEntity': [line(1, ' ', 1, 'GOODS')] };
+    const result = await run(artifact, 'GET /api/orders/{orderId}/summary', broken, { params: { orderId: ORDER }, context: { tenantId: TENANT } });
+    expect(result.status).toBe(500);
+  });
+
+  it('keeps external effects online and refuses in-memory state', async () => {
+    const artifact = await compileJava(SOURCES);
+    const pay = endpoint(artifact, 'POST /api/orders/{orderId}/pay');
+    expect(pay.offlineClass).toBe('ONLINE_REQUIRED');
+    expect(pay.reasons[0]).toMatch(/WebClient/);
+    const cached = endpoint(artifact, 'GET /api/orders/{orderId}/cached');
+    expect(cached.offlineClass).toBe('UNSUPPORTED');
+    expect(cached.reasons[0]).toMatch(/holds state/);
+  });
+});
