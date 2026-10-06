@@ -69,12 +69,28 @@ export async function runDifferential(options: DifferentialOptions): Promise<Dif
   if (options.token !== undefined) headers.authorization = `Bearer ${options.token}`;
 
   try {
-    const rows = await reader.rows(claims);
-    const store = new MemoryStore();
-    await store.open(artifact.projections);
-    await store.transaction(async (tx) => {
-      for (const [entity, list] of Object.entries(rows)) for (const row of list) await tx.put(entity, row);
-    });
+    /**
+     * The session's rows as the server holds them right now. Comparing means
+     * running both sides on the *same* data, so with `writes` on this is read
+     * again before every case: the run's own mutations have moved the server
+     * on, and a projection loaded once would make later reads disagree for a
+     * reason that has nothing to do with the compiled program.
+     */
+    let rows = await reader.rows(claims);
+    let store = new MemoryStore();
+    const load = async () => {
+      store = new MemoryStore();
+      await store.open(artifact.projections);
+      await store.transaction(async (tx) => {
+        for (const [entity, list] of Object.entries(rows)) for (const row of list) await tx.put(entity, row);
+      });
+    };
+    const reload = async () => {
+      if (options.writes !== true) return;
+      rows = await reader.rows(claims);
+      await load();
+    };
+    await load();
     log(`Loaded the session projection: ${Object.values(rows).reduce((sum, list) => sum + list.length, 0)} rows in ${artifact.projections.length} projections.`);
     const vectors = options.writes === true ? await buildVectors(artifact, { claims }) : [];
 
@@ -106,12 +122,14 @@ export async function runDifferential(options: DifferentialOptions): Promise<Dif
         summary.skipped.push({ endpoint: plan.id, reason: `authorization not decidable offline: ${undecidable}` });
         continue;
       }
+      await reload();
       const cases = await requestsFor(plan, rows, reader, projections, claims, options.maxKeysPerEndpoint ?? 3, vectors.filter((vector) => vector.endpoint === plan.id));
       if (cases.skip !== undefined) {
         summary.skipped.push({ endpoint: plan.id, reason: cases.skip });
         continue;
       }
       for (const testCase of cases.requests) {
+        await reload();
         const uuids = Array.from({ length: plan.uuidSlots }, () => randomUuid());
         let local: { status: number; body: JsonValue | null } = { status: 0, body: null };
         if (denied) local = { status: 403, body: null };
@@ -198,7 +216,26 @@ async function requestsFor(
   } catch {
     // Rows outside the scope are optional.
   }
-  return { requests: keys.map((key) => build({ [name]: key }, body)) };
+  return { requests: keys.map((key, index) => build({ [name]: key }, distinct(body, index))) };
+}
+
+/**
+ * The same body on every key would write the same value into several rows, and
+ * a list ordered by that column then has ties whose order no database
+ * promises — a disagreement about nothing. Only the harness's own `aeris-`
+ * values are varied, and deterministically, so artifacts stay stable.
+ */
+function distinct(body: JsonValue | undefined, index: number): JsonValue | undefined {
+  if (body === undefined || index === 0) return body;
+  const walk = (value: JsonValue): JsonValue => {
+    if (typeof value === 'string') return value.startsWith('aeris-') ? `${value}-${index}` : value;
+    if (Array.isArray(value)) return value.map(walk);
+    if (value !== null && typeof value === 'object') {
+      return Object.fromEntries(Object.entries(value).map(([key, inner]) => [key, walk(inner)]));
+    }
+    return value;
+  };
+  return walk(body);
 }
 
 async function call(

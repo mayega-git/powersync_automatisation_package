@@ -20,7 +20,6 @@ public class MailNotifier {
         return client.post()
                 .uri("/send")
                 .bodyValue(Map.of("board", boardId.toString(), "to", recipient))
-                .retrieve()
-                .bodyToMono(String.class);
+                .exchangeToMono(response -> response.bodyToMono(String.class));
     }
 }

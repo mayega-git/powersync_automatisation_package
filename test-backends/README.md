@@ -38,12 +38,43 @@ charger un enfant par sa clé puis vérifier son parent (`TaskService.byId` ici,
 `ProductVariantEntity` là-bas) est un idiome courant, rencontré sur deux backends
 indépendants.
 
-## Lancer le compilateur dessus
+## Le faire tourner
+
+C'est une vraie application : Java 21, Spring Boot 3, R2DBC, migrations Liquibase, et un
+filtre `Idempotency-Key` qui n'applique qu'une fois une mutation rejouée.
 
 ```bash
-npx tsx .scratch/detect.mts test-backends/taskly   # ce que `aeris init` proposerait
+docker run -d --name taskly-pg -e POSTGRES_USER=taskly -e POSTGRES_PASSWORD=taskly \
+  -e POSTGRES_DB=taskly -p 127.0.0.1:15434:5432 postgres:16-alpine
+npm run corpus:build                       # mvn package
+java -jar test-backends/taskly/target/taskly-0.0.1.jar &
+npm run corpus:differential                # lectures ET écritures
 ```
 
-Après relecture de la proposition — déclarer `ActivityLog.record` inerte et `Label`
-publique — les 15 endpoints se classent sans aucun `UNSUPPORTED` : tout ce qui reste en
-ligne l'est pour une raison sémantique (pas d'idempotence, appel externe, périmètre).
+La session est portée par des en-têtes (`x-workspace-id`, `x-member-id`), comme le mode
+`trusted-headers` de la Gateway : un test peut donc dire qui appelle, sans jeton.
+
+## Pourquoi c'est le contrôle qui compte le plus
+
+`corpus:differential` est le **seul** endroit où un programme compilé est confronté à une
+vraie application Spring Boot plutôt qu'à une fixture. Il exécute chaque endpoint local
+des deux côtés, sur les mêmes données, et compare statut et corps — création comprise,
+avec le remappage de l'identifiant choisi par le client. Le job `differential` de la CI
+le rejoue à chaque poussée.
+
+Une divergence ici est le signal le plus fort du projet : soit le compilateur a mal
+modélisé quelque chose, soit le backend ne fait pas ce qu'il prétend.
+
+## Ce qu'il a trouvé en devenant exécutable
+
+- Spring Data R2DBC traite `save()` avec un identifiant non nul comme un **UPDATE**. Le
+  backend échouait donc à la création — exactement ce qu'AERIS avait compilé
+  (`IF isNull(id) INSERT ELSE UPDATE`). Le modèle avait raison ; le backend a été corrigé
+  avec les deux idiomes réels : `@Version` sur un record, `Persistable` + callback sur une
+  classe.
+- Le harnais différentiel chargeait la projection **une seule fois** : ses propres
+  mutations rendaient les lectures suivantes incomparables. Il la relit désormais avant
+  chaque cas en mode écriture.
+- Il envoyait le **même corps** à chaque clé, écrivant la même valeur dans plusieurs
+  lignes ; une liste triée sur cette colonne avait alors des égalités dont aucune base ne
+  garantit l'ordre. Les valeurs du harnais varient maintenant par requête.

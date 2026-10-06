@@ -20,7 +20,7 @@ public class ActivityLog {
     public Mono<Void> record(UUID workspaceId, UUID memberId, String action, UUID subjectId) {
         return SessionScope.callInfo().flatMap(maybeCall -> {
             CallInfo call = maybeCall.orElse(null);
-            ActivityEntry entry = new ActivityEntry(UUID.randomUUID(), workspaceId, memberId, action,
+            ActivityEntry entry = new ActivityEntry(UUID.randomUUID(), null, workspaceId, memberId, action,
                     subjectId, call == null ? null : call.traceId(), call == null ? null : call.callerIp());
             return entries.save(entry).then();
         });

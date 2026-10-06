@@ -5,7 +5,6 @@ import io.taskly.api.session.CurrentUser;
 import io.taskly.api.session.SessionScope;
 import io.taskly.api.web.ConflictException;
 import io.taskly.api.web.NotFoundException;
-import java.time.Instant;
 import java.util.UUID;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
@@ -39,8 +38,8 @@ public class BoardService {
 
     public Mono<Board> create(String name, String colour) {
         return SessionScope.current().flatMap(user -> {
-            Board board = new Board(UUID.randomUUID(), user.workspaceId(), user.memberId(), name.trim(),
-                    colour == null ? "slate" : colour, false, Instant.now());
+            Board board = Board.create(user.workspaceId(), user.memberId(), name.trim(),
+                    colour == null ? "slate" : colour);
             return boards.save(board)
                     .flatMap(saved -> activity.record(user.workspaceId(), user.memberId(), "BOARD_CREATED", saved.id())
                             .thenReturn(saved));

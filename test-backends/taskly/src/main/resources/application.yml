@@ -2,4 +2,19 @@ spring:
   profiles:
     active: r2dbc
   r2dbc:
-    url: r2dbc:postgresql://localhost:5432/taskly
+    url: ${TASKLY_R2DBC_URL:r2dbc:postgresql://127.0.0.1:15434/taskly}
+    username: ${TASKLY_DB_USER:taskly}
+    password: ${TASKLY_DB_PASSWORD:taskly}
+  liquibase:
+    enabled: true
+    change-log: classpath:db/changelog/db.changelog-master.sql
+    url: ${TASKLY_JDBC_URL:jdbc:postgresql://127.0.0.1:15434/taskly}
+    user: ${TASKLY_DB_USER:taskly}
+    password: ${TASKLY_DB_PASSWORD:taskly}
+server:
+  port: ${TASKLY_PORT:18090}
+logging:
+  level:
+    root: WARN
+    io.taskly: INFO
+    liquibase: INFO

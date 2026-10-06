@@ -27,6 +27,7 @@ const REVIEWED = {
     ],
   },
   scopeClaims: { workspaceId: ['workspaceId'], memberId: ['memberId'] },
+  idempotency: { header: 'Idempotency-Key', methods: ['POST', 'PUT', 'PATCH', 'DELETE'], paths: ['/api/**'] },
   inertEffects: ['ActivityLog.record'],
   publicEntities: ['io.taskly.api.label.Label'],
 };
@@ -44,6 +45,8 @@ describe('the taskly corpus, as `aeris init` proposes it', () => {
     // Single-module layout: the profile still has to be found.
     expect(yaml).toContain('- r2dbc');
     expect(yaml).toContain('#   - ActivityLog.record');
+    // The Idempotency-Key filter is detected, so creations can be replayed.
+    expect(yaml).toContain('header: Idempotency-Key');
   });
 });
 
@@ -70,10 +73,11 @@ describe('the taskly corpus, compiled', () => {
       'GET /api/boards/count': 'LOCAL_READ_SAFE',
       'GET /api/labels': 'LOCAL_READ_SAFE',
       'GET /api/me': 'LOCAL_READ_SAFE',
+      // The backend applies a replayed Idempotency-Key once, so a creation can
+      // be retried; these three are what the differential exercises end to end.
+      'POST /api/boards': 'REPLAYABLE',
+      'PATCH /api/boards/{boardId}/name': 'SPECULATIVE',
       'DELETE /api/boards/{boardId}': 'SPECULATIVE',
-      // No Idempotency-Key filter in this backend, so a lost response could apply twice.
-      'POST /api/boards': 'ONLINE_REQUIRED',
-      'PATCH /api/boards/{boardId}/name': 'ONLINE_REQUIRED',
       // Calls the mail provider.
       'POST /api/boards/{boardId}/share': 'ONLINE_REQUIRED',
       // `TaskService.byId` names which of its two guards failed, so a device
@@ -90,7 +94,6 @@ describe('the taskly corpus, compiled', () => {
   it('says why in words a reader can act on', async () => {
     const { artifact } = await compile();
     const reason = (id: string) => artifact.endpoints.find((plan) => plan.id === id)!.reasons.join(' ');
-    expect(reason('POST /api/boards')).toMatch(/idempotency/i);
     expect(reason('POST /api/boards/{boardId}/share')).toMatch(/external effect/i);
     expect(reason('GET /api/tasks/{taskId}')).toMatch(/restricted to one row of a scoped entity/i);
   });

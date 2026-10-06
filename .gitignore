@@ -9,3 +9,4 @@ EXEMPLE-INSTALLATION-BACKEND.md
 .aeris/
 .scratch/
 .~lock.*#
+test-backends/*/target
