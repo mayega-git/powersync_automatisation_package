@@ -116,6 +116,21 @@ export function queryGuards(program: readonly Instr[], keys?: ReadonlyMap<string
         }
         const byKey = key === undefined ? undefined : instr.where.find((candidate) => candidate.field === key && candidate.cmp === 'eq' && candidate.value !== undefined);
         rows.set(instr.out, { entity: instr.entity, pairs, ...(byKey?.value === undefined ? {} : { keyExpr: byKey.value }) });
+        // Read by its own key and nothing else: the proof may still come from
+        // the parent the program resolves immediately afterwards.
+        if (byKey !== undefined && instr.where.length === 1 && parents.length === 0 && guard !== undefined) {
+          const before = parentBeforeRead(guard, instr.out, rows);
+          if (before !== undefined && before.entity !== instr.entity) parents.push(before);
+        }
+        if (byKey !== undefined && instr.where.length === 1 && parents.length === 0) {
+          const after = parentAfterRead(instr.entity, instr.out, block.slice(index + 1), keys,
+            (where, guard, row) => {
+              const proven = filterPairs(where);
+              for (const pair of impliedPairs(guard, row)) proven.add(pair);
+              return proven;
+            });
+          if (after !== undefined) parents.push(after);
+        }
       }
       out.push({ entity: instr.entity, pairs, parents });
     });
@@ -155,6 +170,98 @@ function parentCandidates(
     }
   }
   return out;
+}
+
+/**
+ * A child read by its own key, whose parent is checked straight after:
+ *
+ *     child = findById(id)          // nothing proven yet
+ *     assert child != null  -> E    // the 404 guard
+ *     parent = findById(child.f)    // the parent decides who may see the child
+ *     assert parent in scope -> E   // the very same error
+ *
+ * Sound because a device holds exactly the children of the parents it can see.
+ * When the parent is out of scope the server reaches its own guard while the
+ * device never finds the child at all, so the two guards must raise the *same*
+ * error — otherwise the bodies differ and the answers diverge. Requiring that
+ * is also what keeps the backend from telling a caller that a row it may not
+ * see exists. Nothing may be written before the parent is proven, or the
+ * server would have written it for a child the device refused outright.
+ */
+function parentAfterRead(
+  entity: string,
+  out: string,
+  rest: readonly Instr[],
+  keys: ReadonlyMap<string, string> | undefined,
+  pairsOf: (where: readonly Filter[], guard: Expr, row: string) => Set<ScopePair>,
+): ParentCandidate | undefined {
+  const childGuard = firstAssert(rest, out);
+  if (childGuard === undefined) return undefined;
+  for (const [index, instr] of rest.entries()) {
+    if (instr.op === 'INSERT' || instr.op === 'UPDATE' || instr.op === 'DELETE' || instr.op === 'QUEUE_INTENT') return undefined;
+    if (instr.op !== 'QUERY' || instr.mode !== 'one' || instr.entity === entity) continue;
+    const parentKey = keys?.get(instr.entity);
+    const [filter, ...others] = instr.where;
+    if (parentKey === undefined || others.length > 0 || filter === undefined || filter.field !== parentKey || filter.cmp !== 'eq') continue;
+    const value = filter.value;
+    if (value?.k !== 'get' || value.of.k !== 'var' || value.of.name !== out) continue;
+    const parentGuard = firstAssert(rest.slice(index + 1), instr.out);
+    if (parentGuard === undefined || canonicalJson(childGuard.error) !== canonicalJson(parentGuard.error)) return undefined;
+    return { field: value.field, entity: instr.entity, pairs: pairsOf(instr.where, parentGuard.test, instr.out) };
+  }
+  return undefined;
+}
+
+/**
+ * The other order, and the safer one: the parent is read and proven *before*
+ * the child, and a single guard rejects both a missing child and one belonging
+ * elsewhere — what `findChild(id).filter(c -> c.f == parent.key).switchIfEmpty(e)`
+ * compiles to. Because one assertion covers both, the two can never raise
+ * different errors, so nothing has to be compared.
+ */
+function parentBeforeRead(
+  guard: Expr,
+  row: string,
+  rows: ReadonlyMap<string, { entity: string; pairs: Set<ScopePair>; keyExpr?: Expr }>,
+): ParentCandidate | undefined {
+  // The guard must also be what rejects an absent row, or the two paths part ways.
+  if (!mentionsEmptiness(guard, row)) return undefined;
+  for (const conjunct of conjuncts(guard)) {
+    if (conjunct.k !== 'op' || conjunct.op !== 'eq') continue;
+    const [a, b] = conjunct.args as [Expr, Expr];
+    const fieldOf = (side: Expr) => (side.k === 'get' && side.of.k === 'var' && side.of.name === row ? side.field : undefined);
+    const field = fieldOf(a) ?? fieldOf(b);
+    const other = fieldOf(a) === undefined ? a : b;
+    if (field === undefined) continue;
+    const text = canonicalJson(other);
+    for (const candidate of rows.values()) {
+      if (candidate.keyExpr === undefined || canonicalJson(candidate.keyExpr) !== text) continue;
+      return { field, entity: candidate.entity, pairs: candidate.pairs };
+    }
+  }
+  return undefined;
+}
+
+/** Whether `test` is false when `row` is absent, so one guard covers both. */
+function mentionsEmptiness(test: Expr, row: string): boolean {
+  const seek = (expr: Expr): boolean => {
+    if (expr.k === 'op') {
+      if (expr.op === 'isNull' && expr.args[0]?.k === 'var' && expr.args[0].name === row) return true;
+      return expr.args.some(seek);
+    }
+    if (expr.k === 'cond') return seek(expr.test) || seek(expr.then) || seek(expr.else);
+    return false;
+  };
+  return seek(test);
+}
+
+/** The first instruction referencing `row`, when it is an ASSERT carrying its error. */
+function firstAssert(rest: readonly Instr[], row: string): { test: Expr; error: unknown } | undefined {
+  for (const instr of rest) {
+    if (!mentions(instr, row)) continue;
+    return instr.op === 'ASSERT' ? { test: instr.test, error: instr.error } : undefined;
+  }
+  return undefined;
 }
 
 /** Test of the first instruction referencing `row`, when it is an ASSERT or IF condition. */

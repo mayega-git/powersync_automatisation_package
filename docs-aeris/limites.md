@@ -35,9 +35,8 @@ Les raisons exactes et leur fréquence sont dans `aeris-report.html`. Principale
   les tests différentiels, jamais exécutées telles quelles.
 - **Écritures par élément** (`saveAll`, `flatMap(repo::save)`) : étendre `EACH` aux
   écritures demande des identifiants capturés par élément et un `idMap` indexé.
-- **Lecture d'un enfant par sa propre clé** : une entité scopée par parent dont une
-  lecture passe par sa clé sans restriction au parent perd son périmètre, même quand le
-  handler vérifie le parent juste après (`ProductVariantEntity`, 23 endpoints). Étendre
-  la preuve demande d'admettre une preuve *postérieure* à la lecture, et d'exiger que le
-  404 de l'enfant absent soit identique à celui du parent hors périmètre — sinon le corps
-  de la réponse divergerait.
+- **Lecture d'un enfant par sa propre clé** : désormais prouvée (voir `compilateur.md`),
+  mais seulement quand la garde est une assertion et que l'absence de l'enfant et le
+  parent hors périmètre lèvent la **même** erreur. Un backend qui nomme lequel des deux a
+  échoué reste en ligne — à juste titre : son corps de réponse divergerait, et il révèle
+  à l'appelant qu'une ligne qu'il n'a pas le droit de voir existe.

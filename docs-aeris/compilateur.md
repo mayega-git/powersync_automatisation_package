@@ -124,6 +124,30 @@ requête vérifiée, et une seule lecture non restreinte de l'enfant suffit à r
 périmètre de toute l'entité. Les chaînes sont suivies (petit-enfant), les cycles et
 les parents déclarés publics sont rejetés par le validateur d'IR.
 
+**Enfant lu par sa propre clé.** L'idiome le plus courant ne restreint rien au moment
+de la requête : on charge l'enfant par son identifiant, et c'est son parent qui décide
+ensuite qui peut le voir. Deux ordres sont prouvés.
+
+```java
+// parent prouvé d'abord : une seule garde rejette l'absence ET l'appartenance
+findChild(id).filter(c -> c.getParentId().equals(parent.getId())).switchIfEmpty(error)
+
+// parent résolu ensuite : les deux gardes doivent lever la MÊME erreur
+findChild(id).switchIfEmpty(error).flatMap(c -> parentOfSession(c.getParentId(), error)…)
+```
+
+La raison tient en une phrase : un appareil détient exactement les enfants des parents
+qu'il voit. Quand le parent est hors périmètre, le serveur atteint *sa* garde tandis que
+l'appareil ne trouve pas l'enfant du tout — si les deux gardes lèvent des erreurs
+différentes, les corps de réponse divergent. Le premier ordre rend cette identité
+automatique (une seule assertion couvre les deux cas) ; le second l'exige, et
+l'endpoint reste en ligne sinon.
+
+Cette exigence a un effet de bord utile : un backend qui nomme lequel des deux a échoué
+révèle à l'appelant qu'une ligne qu'il n'a pas le droit de voir existe. Le compilateur
+refuse exactement ceux-là. Enfin, rien ne peut être écrit avant que le parent soit
+prouvé, sinon le serveur aurait écrit pour un enfant que l'appareil, lui, a refusé.
+
 ## Sorties (`.aeris/`)
 
 - `aeris-artifact.json` : l'IR complet (endpoints, programmes, projections, vecteurs de test).
