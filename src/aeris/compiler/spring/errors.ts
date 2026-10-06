@@ -19,6 +19,8 @@ const LIBRARY_HIERARCHY: Readonly<Record<string, string>> = {
   'java.lang.ArithmeticException': 'java.lang.RuntimeException',
   'java.util.NoSuchElementException': 'java.lang.RuntimeException',
   'java.lang.ClassCastException': 'java.lang.RuntimeException',
+  'java.time.format.DateTimeParseException': 'java.time.DateTimeException',
+  'java.time.DateTimeException': 'java.lang.RuntimeException',
   'java.lang.ArrayIndexOutOfBoundsException': 'java.lang.IndexOutOfBoundsException',
   'java.lang.IndexOutOfBoundsException': 'java.lang.RuntimeException',
   'org.springframework.security.access.AccessDeniedException': 'java.lang.RuntimeException',

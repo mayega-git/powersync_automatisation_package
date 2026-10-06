@@ -939,7 +939,10 @@ export class Evaluator {
 
   /** Arrow-form switch over constants (enums, strings, integers). */
   private switchExpression(node: SyntaxNode, scope: Scope): SV {
-    const subject = this.expr(field(node, 'condition')!, scope);
+    let subject = this.expr(field(node, 'condition')!, scope);
+    // switch (this) inside an enum method: the constant being evaluated.
+    const constantName = subject.t === 'obj' && this.project.type(subject.cls)?.kind === 'enum' ? subject.fields.get('$name') : undefined;
+    if (subject.t === 'obj' && constantName?.t === 'pure') subject = pure(constantName.e, { name: subject.cls, args: [], array: 0 });
     if (subject.t !== 'pure') this.fail('switch over a non-scalar value', node, scope);
     const body = field(node, 'body')!;
     const rules = named(body).filter((child) => child.type === 'switch_rule');

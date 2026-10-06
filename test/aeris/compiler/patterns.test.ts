@@ -550,3 +550,50 @@ public class CatalogController {
     expect((await run(artifact, 'GET /api/orders/{orderId}/known', rows, { params: { orderId: ORDER }, context: { tenantId: TENANT } })).body).toEqual(['a', 'c']);
   });
 });
+
+describe('library semantics', () => {
+  it('compiles String.format with constant patterns, YearMonth and switch (this) in enums', async () => {
+    const artifact = await compileJava({ ...SOURCES,
+      'demo/orders/Period.java': `
+package demo.orders;
+import java.time.YearMonth;
+public record Period(int year, int month) {
+  public static Period parse(String value) {
+    YearMonth ym = YearMonth.parse(value);
+    return new Period(ym.getYear(), ym.getMonthValue());
+  }
+  public String format() { return String.format("%04d-%02d", year, month); }
+}
+`,
+      'demo/orders/Band.java': `
+package demo.orders;
+public enum Band {
+  LOW, HIGH;
+  public String label() {
+    return switch (this) {
+      case LOW -> "low";
+      case HIGH -> "high";
+    };
+  }
+}
+`,
+      'demo/orders/FormatController.java': `
+package demo.orders;
+import org.springframework.web.bind.annotation.*;
+import reactor.core.publisher.Mono;
+@RestController
+public class FormatController {
+  @GetMapping("/api/period") public Mono<String> period(@RequestParam String value, @RequestParam Band band, @RequestParam int count) {
+    return Mono.just(Period.parse(value).format() + "/" + band.label() + String.format("[%5d|%s|%%]", count, value));
+  }
+}
+` });
+    const plan = endpoint(artifact, 'GET /api/period');
+    expect(plan.offlineClass, plan.reasons.join('; ')).toBe('LOCAL_READ_SAFE');
+    const ask = (value: string, count = '7') => run(artifact, 'GET /api/period', {}, { query: { value, band: 'HIGH', count }, context: { tenantId: TENANT } });
+    expect((await ask('2026-03')).body).toBe('2026-03/high[    7|2026-03|%]');
+    expect((await ask('0007-11', '-123456')).body).toBe('0007-11/high[-123456|0007-11|%]');
+    expect((await ask('2026-13')).status).toBe(500);
+    expect((await ask('26-01')).status).toBe(500);
+  });
+});

@@ -69,6 +69,71 @@ function listOf(ev: Evaluator, items: SV[], elem: JType): ListSV {
 }
 
 /** Static fields of library types (HttpStatus.X, BigDecimal.ZERO, Boolean.TRUE...). */
+const TEXT_SAFE = new Set(['java.lang.String', 'java.util.UUID', 'int', 'long', 'short', 'byte', 'java.lang.Integer', 'java.lang.Long',
+  'java.lang.Short', 'java.lang.Byte', 'boolean', 'java.lang.Boolean', 'java.time.YearMonth']);
+const INTEGRAL = new Set(['int', 'long', 'short', 'byte', 'java.lang.Integer', 'java.lang.Long', 'java.lang.Short', 'java.lang.Byte']);
+
+/** Left-pads `text` with `pad` up to `width` characters (never truncates), like Formatter widths. */
+function padded(text: Expr, width: number, pad: string): Expr {
+  let result: Expr = text;
+  for (let length = width - 1; length >= 0; length -= 1) {
+    result = cond(op('eq', op('length', text), lit(length)), op('concat', lit(pad.repeat(width - length)), text), result);
+  }
+  return result;
+}
+
+/**
+ * String.format with a constant pattern: %s (values whose text form is
+ * unambiguous), %d / %0Nd / %Nd (integers), %% and %n. Anything else is refused.
+ */
+function formatString(pattern: SV | undefined, values: SV[], node: SyntaxNode): Expr {
+  if (pattern?.t !== 'pure' || pattern.e.k !== 'lit' || typeof pattern.e.v !== 'string') throw new Unsupported('String.format() with a non-constant pattern', node);
+  const parts: Expr[] = [];
+  let next = 0;
+  const text = pattern.e.v;
+  const spec = /%(0?)(\d*)([sdn%])/g;
+  let last = 0;
+  for (const match of text.matchAll(spec)) {
+    const literal = text.slice(last, match.index);
+    if (/%/.test(literal)) throw new Unsupported(`String.format() conversion in "${text}" is not modeled`, node);
+    if (literal.length > 0) parts.push(lit(literal));
+    last = match.index! + match[0].length;
+    const [, zero, widthText, conversion] = match;
+    if (conversion === '%') { parts.push(lit('%')); continue; }
+    if (conversion === 'n') { parts.push(lit('\n')); continue; }
+    const value = values[next];
+    next += 1;
+    if (value?.t !== 'pure') throw new Unsupported('String.format() argument is not a value', node);
+    const width = widthText === '' ? 0 : Number(widthText);
+    if (conversion === 's') {
+      if (zero === '0') throw new Unsupported('%0s is invalid in String.format()', node);
+      const enumType = value.jt.name;
+      if (!TEXT_SAFE.has(enumType)) throw new Unsupported(`String.format("%s") of ${enumType} depends on its toString()`, node);
+      parts.push(width > 0 ? padded(op('concat', lit(''), value.e), width, ' ') : op('concat', lit(''), value.e));
+      continue;
+    }
+    if (!INTEGRAL.has(value.jt.name)) throw new Unsupported(`String.format("%d") of ${value.jt.name}`, node);
+    const digits = op('concat', lit(''), value.e);
+    if (width === 0) { parts.push(digits); continue; }
+    if (zero === '0') {
+      // %0Nd: the sign comes first, zeros fill up to N characters in total (boxed nulls print differently: refused).
+      if (!['int', 'long', 'short', 'byte'].includes(value.jt.name)) throw new Unsupported('String.format("%0Nd") of a nullable integer', node);
+      const magnitude = op('concat', lit(''), op('abs', value.e));
+      parts.push(cond(op('lt', value.e, lit(0)), op('concat', lit('-'), padded(magnitude, width - 1, '0')), padded(magnitude, width, '0')));
+    } else {
+      parts.push(padded(digits, width, ' '));
+    }
+  }
+  const tail = text.slice(last);
+  if (/%/.test(tail)) throw new Unsupported(`String.format() conversion in "${text}" is not modeled`, node);
+  if (tail.length > 0) parts.push(lit(tail));
+  if (next !== values.length) throw new Unsupported('String.format() argument count does not match the pattern', node);
+  return parts.length === 0 ? lit('') : parts.length === 1 ? op('concat', lit(''), parts[0]!) : op('concat', ...parts);
+}
+
+/** java.time.YearMonth values are their ISO text "uuuu-MM". */
+const YEAR_MONTH: JType = { name: 'java.time.YearMonth', args: [], array: 0 };
+
 /** java.math.MathContext values are compile-time constants "mc:<precision>:<mode>". */
 const MATH_CONTEXT: JType = { name: 'java.math.MathContext', args: [], array: 0 };
 
@@ -119,6 +184,19 @@ export function libraryStatic(ev: Evaluator, fqn: string, name: string, args: SV
   const type = simple(fqn);
   const arg = (index: number, what = `${type}.${name}`) => scalar(args[index], what, node);
   switch (type) {
+    case 'YearMonth':
+      if (name === 'parse' && args.length === 1) {
+        // YearMonth.parse(text): ISO "uuuu-MM"; null -> NullPointerException, anything else -> DateTimeParseException.
+        const text = arg(0);
+        scope.block.emit({ op: 'ASSERT', test: op('notNull', text), error: ev.errors.map({ t: 'exception', cls: 'java.lang.NullPointerException', message: lit('text') }) });
+        scope.block.emit({
+          op: 'ASSERT',
+          test: op('matches', text, lit('(-?\\d{4}|[+-]\\d{5,9})-(0[1-9]|1[0-2])')),
+          error: ev.errors.map({ t: 'exception', cls: 'java.time.format.DateTimeParseException', message: op('concat', op('concat', lit("Text '"), text), lit("' could not be parsed at index 0")) }),
+        });
+        return pure(text, YEAR_MONTH);
+      }
+      break;
     case 'MathContext':
       if (name === '<init>' && (args.length === 1 || args.length === 2)) {
         const precision = args[0]!.t === 'pure' && args[0].e.k === 'lit' ? args[0].e.v : undefined;
@@ -170,6 +248,7 @@ export function libraryStatic(ev: Evaluator, fqn: string, name: string, args: SV
       break;
     case 'String':
       if (name === 'valueOf' && args.length === 1) return pure(op('concat', lit(''), arg(0)), T.string);
+      if (name === 'format' && args.length >= 1) return pure(formatString(args[0], args.slice(1), node), T.string);
       break;
     case 'Optional':
       if (name === 'ofNullable' && args.length === 1) return { t: 'optional', value: args[0]!, present: args[0]!.t === 'pure' ? op('notNull', arg(0)) : TRUE };
@@ -577,6 +656,13 @@ function valueMethod(ev: Evaluator, receiver: SV & { t: 'pure' }, name: string, 
     case 'org.springframework.security.core.authority.SimpleGrantedAuthority':
       // Granted authorities are carried as their string form in the session claims.
       if (name === 'getAuthority' && args.length === 0) return pure(self, T.string);
+      break;
+    case 'java.time.YearMonth':
+      switch (`${name}/${args.length}`) {
+        case 'getYear/0': return pure({ k: 'cast', of: op('replaceAll', self, lit('-\\d{2}$'), lit('')), to: 'integer' } as Expr, T.int);
+        case 'getMonthValue/0': return pure({ k: 'cast', of: op('replaceAll', self, lit('^.*-'), lit('')), to: 'integer' } as Expr, T.int);
+        case 'toString/0': return pure(self, T.string);
+      }
       break;
     case 'java.math.BigDecimal': {
       const decimal = { name: 'java.math.BigDecimal', args: [], array: 0 };
