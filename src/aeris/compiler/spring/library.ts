@@ -1,7 +1,7 @@
 import type { Expr } from '../../ir/types.js';
 import type { JType } from '../java/model.js';
 import type { SyntaxNode } from '../java/parser.js';
-import { attempt, branch, foldPureInstrs, mergeEmission } from './branching.js';
+import { attempt, branch, foldPureInstrs, mergeEmission, pureValue } from './branching.js';
 import { fieldTypeOf } from './persistence.js';
 import { mapElements } from './reactive.js';
 import type { Evaluator, Scope } from './evaluator.js';
@@ -632,8 +632,9 @@ function listMethod(ev: Evaluator, receiver: ListSV, name: string, args: SV[], n
   const lambda = (fn: SV, what: string): { as: string; value: SV } => {
     const as = scope.block.fresh('it');
     const probe = attempt(scope.block, (child) => ev.apply(fn, [element(vr(as))], child, node, scope));
-    if (!probe.outcome.ok || probe.instrs.length > 0) throw new Unsupported(`${what} has side effects per element`, node);
-    return { as, value: probe.outcome.value };
+    const value = probe.outcome.ok ? pureValue(probe.instrs, probe.outcome.value) : undefined;
+    if (value === undefined) throw new Unsupported(`${what} has side effects per element`, node);
+    return { as, value };
   };
   switch (`${name}/${args.length}`) {
     case 'forEach/1': {

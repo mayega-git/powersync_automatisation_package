@@ -155,6 +155,21 @@ export const LIT_FALSE = FALSE;
 export { pure };
 
 /**
+ * The value of a per-element function as one expression: its pure bindings
+ * (LETs, IFs choosing between them) are folded in; anything else is refused.
+ */
+export function pureValue(instrs: readonly Instr[], value: SV): SV | undefined {
+  if (instrs.length === 0) return value;
+  if (value.t !== 'pure') return undefined;
+  try {
+    return { ...value, e: foldPureInstrs(instrs, [value.e])[0]! };
+  } catch (error) {
+    if (error instanceof Unsupported) return undefined;
+    throw error;
+  }
+}
+
+/**
  * Folds instructions that only bind values (LETs, and IFs choosing between
  * LET values) into the given expressions, so they can be used where a single
  * expression is required (policy checks, filter predicates).

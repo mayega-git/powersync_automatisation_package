@@ -15,8 +15,10 @@ Ce qu'AERIS ne promet pas (architecture §1, §21.2), et ce qui reste ouvert.
 Les raisons exactes et leur fréquence sont dans `aeris-report.html`. Principales :
 
 - État en mémoire dans les services (`Map` mutables) — inévitable.
-- `Mono.zip` à plus de 8 sources, `Flux.flatMap` avec effet par élément, `subscribe()`.
-- Boucles `for` classiques, `while`, `break/continue`, `try/finally`.
+- `Mono.zip` à plus de 8 sources, `Flux.flatMap` qui **écrit** par élément, `subscribe()`.
+- `Flux.onErrorX` (Reactor émet les éléments déjà produits avant le repli : non
+  reproductible sur une liste matérialisée), `onErrorResume` qui inspecte l'exception.
+- Boucles `while`, `break/continue`, `try/finally`, `Map.merge` sur clés dynamiques.
 - `DatabaseClient` / SQL brut, `@Modifying`, requêtes dérivées `Like/Containing/IgnoreCase`
   (dépendent de la collation de la base).
 - Verrouillage optimiste `@Version`, auditing Spring Data, convertisseurs R2DBC.
@@ -30,5 +32,5 @@ Les raisons exactes et leur fréquence sont dans `aeris-report.html`. Principale
 - **Modèle léger au build** (§13) : proposer des annotations pour les cas
   `UNSUPPORTED` récurrents ; ses propositions restent vérifiées par le compilateur et
   les tests différentiels, jamais exécutées telles quelles.
-- **Compilation des beans de politique** : traduire `BusinessAccessPolicy` en
-  expressions IR au lieu de les réimplémenter côté front.
+- **Écritures par élément** (`saveAll`, `flatMap(repo::save)`) : étendre `EACH` aux
+  écritures demande des identifiants capturés par élément et un `idMap` indexé.

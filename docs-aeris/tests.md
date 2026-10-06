@@ -34,7 +34,7 @@ Les claims passés en `--claims` doivent correspondre exactement à ce que le ba
 dérive du jeton (tenant, organisation, utilisateur…).
 
 Résultat obtenu sur la copie du backend (session client d'API, sans utilisateur) :
-232 endpoints locaux, 204 requêtes comparées, **204 identiques, 0 divergence** — dont
+254 endpoints de lecture locaux, 233 requêtes comparées, **233 identiques, 0 divergence** — dont
 des `200` avec données réelles (points de vente, vendeurs, plans commerciaux,
 portefeuilles, catalogue produit…), des `404` sur identifiants inconnus ou hors
 périmètre, et des `403` où la politique compilée refuse exactement comme le serveur.

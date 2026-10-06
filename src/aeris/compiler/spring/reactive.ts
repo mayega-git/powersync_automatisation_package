@@ -1,7 +1,7 @@
 import type { Expr, Instr } from '../../ir/types.js';
 import type { JType } from '../java/model.js';
 import type { SyntaxNode } from '../java/parser.js';
-import { attempt, branch, mergeEmission, restoreObjects, snapshotObjects } from './branching.js';
+import { attempt, branch, mergeEmission, pureValue, restoreObjects, snapshotObjects } from './branching.js';
 import { sortExpr } from './library.js';
 import type { Evaluator, Scope } from './evaluator.js';
 import {
@@ -80,8 +80,9 @@ function elemOf(sv: SV): JType {
 function pureApply(ev: Evaluator, fn: SV, args: SV[], block: Block, node: SyntaxNode, scope: Scope, what: string): SV {
   const probe = attempt(block, (child) => ev.apply(fn, args, child, node, scope));
   if (!probe.outcome.ok) throw new Unsupported(`${what} can throw for some elements`, node);
-  if (probe.instrs.length > 0) throw new Unsupported(`${what} has side effects per element`, node);
-  return probe.outcome.value;
+  const value = pureValue(probe.instrs, probe.outcome.value);
+  if (value === undefined) throw new Unsupported(`${what} has side effects per element`, node);
+  return value;
 }
 
 /**
