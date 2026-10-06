@@ -2,6 +2,7 @@ package io.taskly.api.task;
 
 import java.time.Instant;
 import java.util.UUID;
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -29,6 +30,7 @@ public class Task implements Persistable<UUID> {
     private Instant createdAt;
     private Instant completedAt;
 
+    @JsonIgnore
     @Transient
     @Builder.Default
     private boolean newEntity = true;
@@ -38,6 +40,8 @@ public class Task implements Persistable<UUID> {
         return id;
     }
 
+    /** Persistence bookkeeping: never part of what the API answers. */
+    @JsonIgnore
     @Override
     public boolean isNew() {
         return newEntity;

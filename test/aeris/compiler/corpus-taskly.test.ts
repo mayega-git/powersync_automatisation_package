@@ -62,6 +62,7 @@ describe('the taskly corpus, compiled', () => {
     const byEntity = new Map(artifact.projections.map((projection) => [projection.entity.split('.').at(-1), projection]));
     expect(byEntity.get('Board')!.scope).toEqual([{ field: 'workspaceId', cmp: 'eq', value: { k: 'ctx', name: 'workspaceId' } }]);
     expect(byEntity.get('Label')!.public).toBe(true);
+    expect(byEntity.get('Task')!.parent).toEqual({ field: 'boardId', entity: 'io.taskly.api.board.Board' });
   });
 
   it('classifies each endpoint exactly as recorded here', async () => {
@@ -80,14 +81,15 @@ describe('the taskly corpus, compiled', () => {
       'DELETE /api/boards/{boardId}': 'SPECULATIVE',
       // Calls the mail provider.
       'POST /api/boards/{boardId}/share': 'ONLINE_REQUIRED',
-      // `TaskService.byId` names which of its two guards failed, so a device
-      // would answer differently from the server. See parent-after-read.test.ts.
-      'GET /api/boards/{boardId}/open-count': 'ONLINE_REQUIRED',
-      'GET /api/boards/{boardId}/tasks': 'ONLINE_REQUIRED',
-      'POST /api/boards/{boardId}/tasks': 'ONLINE_REQUIRED',
-      'GET /api/tasks/{taskId}': 'ONLINE_REQUIRED',
-      'POST /api/tasks/{taskId}/complete': 'ONLINE_REQUIRED',
-      'DELETE /api/tasks/{taskId}': 'ONLINE_REQUIRED',
+      // A task is read by its own key and its board decides who may see it. Both
+      // ways of failing answer the same thing, so the proof holds and the whole
+      // entity is scoped through its parent.
+      'GET /api/boards/{boardId}/open-count': 'LOCAL_READ_SAFE',
+      'GET /api/boards/{boardId}/tasks': 'LOCAL_READ_SAFE',
+      'GET /api/tasks/{taskId}': 'LOCAL_READ_SAFE',
+      'POST /api/boards/{boardId}/tasks': 'SPECULATIVE',
+      'POST /api/tasks/{taskId}/complete': 'SPECULATIVE',
+      'DELETE /api/tasks/{taskId}': 'SPECULATIVE',
     });
   });
 
@@ -95,6 +97,5 @@ describe('the taskly corpus, compiled', () => {
     const { artifact } = await compile();
     const reason = (id: string) => artifact.endpoints.find((plan) => plan.id === id)!.reasons.join(' ');
     expect(reason('POST /api/boards/{boardId}/share')).toMatch(/external effect/i);
-    expect(reason('GET /api/tasks/{taskId}')).toMatch(/restricted to one row of a scoped entity/i);
   });
 });

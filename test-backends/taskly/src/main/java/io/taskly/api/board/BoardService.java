@@ -22,7 +22,7 @@ public class BoardService {
     }
 
     public Flux<Board> list() {
-        return SessionScope.current().flatMapMany(user -> boards.findByWorkspaceIdOrderByNameAsc(user.workspaceId()));
+        return SessionScope.current().flatMapMany(user -> boards.findByWorkspaceIdOrderByNameAscIdAsc(user.workspaceId()));
     }
 
     public Flux<Board> active() {
@@ -31,9 +31,18 @@ public class BoardService {
 
     /** A board of the caller's workspace, or nothing. */
     public Mono<Board> ofWorkspace(UUID boardId) {
+        return ofWorkspace(boardId, "No board " + boardId);
+    }
+
+    /**
+     * The same lookup, raising the caller's own message. Reaching a board through
+     * something it owns must not answer "no board X": that would tell whoever
+     * asked that the row exists and belongs to a workspace they cannot see.
+     */
+    public Mono<Board> ofWorkspace(UUID boardId, String notFound) {
         return SessionScope.current().flatMap(user -> boards.findById(boardId)
                 .filter(board -> user.workspaceId().equals(board.workspaceId()))
-                .switchIfEmpty(Mono.error(new NotFoundException("No board " + boardId))));
+                .switchIfEmpty(Mono.error(new NotFoundException(notFound))));
     }
 
     public Mono<Board> create(String name, String colour) {

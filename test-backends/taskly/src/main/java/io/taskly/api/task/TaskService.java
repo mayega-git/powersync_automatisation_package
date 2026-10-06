@@ -33,11 +33,16 @@ public class TaskService {
         return boards.ofWorkspace(boardId).flatMapMany(board -> tasks.findByBoardIdAndState(boardId, state));
     }
 
-    /** A task reached by its own key: its board decides whether the caller may see it. */
+    /**
+     * A task reached by its own key: its board decides whether the caller may see
+     * it. Both ways of failing answer the same thing, so the reply never reveals
+     * that a task exists on a board the caller has no access to.
+     */
     public Mono<Task> byId(UUID taskId) {
+        String notFound = "No task " + taskId;
         return tasks.findById(taskId)
-                .switchIfEmpty(Mono.error(new NotFoundException("No task " + taskId)))
-                .flatMap(task -> boards.ofWorkspace(task.getBoardId()).thenReturn(task));
+                .switchIfEmpty(Mono.error(new NotFoundException(notFound)))
+                .flatMap(task -> boards.ofWorkspace(task.getBoardId(), notFound).thenReturn(task));
     }
 
     public Mono<Task> add(UUID boardId, String title, Integer position) {
