@@ -33,13 +33,21 @@ horodatages capturés sont comparés par leur forme. `--writes` ajoute les mutat
 Les claims passés en `--claims` doivent correspondre exactement à ce que le backend
 dérive du jeton (tenant, organisation, utilisateur…).
 
-Résultat obtenu sur la copie du backend (session client d'API, sans utilisateur) :
-254 endpoints de lecture locaux, 233 requêtes comparées, **233 identiques, 0 divergence** — dont
-des `200` avec données réelles (points de vente, vendeurs, plans commerciaux,
-portefeuilles, catalogue produit…), des `404` sur identifiants inconnus ou hors
-périmètre, et des `403` où la politique compilée refuse exactement comme le serveur.
-Avec un jeton utilisateur portant des permissions, les mêmes endpoints sont comparés
-sur leurs données.
+Résultat obtenu sur la copie du backend (session client d'API, **sans utilisateur**) :
+294 endpoints de lecture locaux, 291 requêtes comparées, **291 identiques, 0 divergence**.
+
+Ce chiffre doit être lu avec sa limite, car elle est importante : **269 des 291
+comparaisons sont des `403` identiques**, et seulement 15 des `200` et 7 des `404`. La
+politique métier du backend exige un `userId`, qui ne provient que d'un jeton porteur de
+session vérifié (`TenantWebFilter`) ; sans lui, tout refuse. Ce que ces 291 comparaisons
+établissent, c'est donc que **l'autorisation compilée refuse exactement comme le
+serveur** — un résultat réel, mais qui n'exerce presque pas le chemin de données.
+
+Pour que le différentiel morde vraiment, il faut une session utilisateur portant des
+permissions, puis relancer en lecture **et** avec `--writes`. Tant que ce n'est pas
+fait, les 296 endpoints `REPLAYABLE`/`SPECULATIVE` gardent un contrat de synchronisation
+jamais confronté à des mutations réelles sur le backend : c'est le trou de vérification
+le plus important du projet.
 
 ## Démonstration de bout en bout sur le backend réel
 

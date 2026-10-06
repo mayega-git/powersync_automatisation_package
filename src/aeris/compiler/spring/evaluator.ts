@@ -1043,20 +1043,41 @@ export class Evaluator {
     }
     if (self.t === 'bean') {
       const decl = this.project.instanceFields(self.cls).find((candidate) => candidate.name === name);
-      return decl === undefined ? undefined : this.injected(decl, scope, node);
+      return decl === undefined ? undefined : this.injected(decl, scope, node, self.cls);
     }
     return undefined;
   }
 
-  /** Resolves an injected dependency of a bean field. */
-  injected(decl: FieldDecl, scope: Scope, node: SyntaxNode): SV {
+  /**
+   * Resolves an injected dependency of a bean field. `concrete` is the bean's
+   * own class, which may be a subclass of the one declaring the field: a field
+   * typed on the declaring class's type variables (`Port<T>` in an abstract
+   * template service) is read with those variables bound, exactly as Spring
+   * resolves it for that bean.
+   */
+  injected(decl: FieldDecl, scope: Scope, node: SyntaxNode, concrete?: TypeDecl): SV {
+    const jt = this.boundType(decl.type, decl.owner, concrete);
     if (decl.initializer !== undefined && !decl.modifiers.has('static')) {
-      const jt = decl.type;
       const special = this.injectedSpecial(jt);
       if (special !== undefined) return special;
       this.fail(`Bean field ${decl.owner.simple}.${decl.name} holds state`, node, scope);
     }
-    return this.injectedType(decl.type, decl.annotations, `${decl.owner.simple}.${decl.name}`, scope, node);
+    return this.injectedType(jt, decl.annotations, `${decl.owner.simple}.${decl.name}`, scope, node);
+  }
+
+  /** `declared` with the type variables of `owner` replaced by what `concrete` passes it. */
+  private boundType(declared: JType, owner: TypeDecl, concrete: TypeDecl | undefined): JType {
+    if (declared.args.length === 0 || owner.typeParams.length === 0) return declared;
+    if (concrete === undefined || concrete.fqn === owner.fqn) return declared;
+    const passed = this.project.supertypeArguments(concrete, owner.fqn);
+    if (passed === undefined) return declared;
+    return {
+      ...declared,
+      args: declared.args.map((arg) => {
+        const index = owner.typeParams.indexOf(arg.name);
+        return index >= 0 && passed[index] !== undefined ? passed[index]! : arg;
+      }),
+    };
   }
 
   private injectedSpecial(jt: JType): SV | undefined {
@@ -1093,6 +1114,17 @@ export class Evaluator {
       const produced = this.beanFactory(target, scope, node);
       if (produced !== undefined) return produced;
       if (target.kind === 'class' && !target.modifiers.has('abstract')) return { t: 'bean', cls: target };
+    }
+    // A generic port (`Port<Course>`): keep the implementations that give the
+    // port that very argument, the way Spring resolves a generic injection.
+    const wantedArgs = jt.args.filter((arg) => !arg.unresolved && arg.name !== 'var');
+    if (wantedArgs.length > 0 && wantedArgs.length === jt.args.length) {
+      const matching = candidates.filter((impl) => {
+        const given = this.project.supertypeArguments(impl, target.fqn);
+        return given !== undefined && given.length === jt.args.length
+          && given.every((arg, index) => arg.name === jt.args[index]!.name);
+      });
+      if (matching.length === 1) return { t: 'bean', cls: matching[0]! };
     }
     this.fail(`Dependency ${target.simple} has ${candidates.length} active implementations`, node, scope);
   }

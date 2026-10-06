@@ -21,7 +21,8 @@ Les raisons exactes et leur fréquence sont dans `aeris-report.html`. Principale
 - Boucles `while`, `break/continue`, `try/finally`, `Map.merge` sur clés dynamiques.
 - `DatabaseClient` / SQL brut, `@Modifying`, requêtes dérivées `Like/Containing/IgnoreCase`
   (dépendent de la collation de la base).
-- Verrouillage optimiste `@Version`, auditing Spring Data, convertisseurs R2DBC.
+- Auditing Spring Data (`@CreatedDate`, `@LastModifiedDate`) : détecté et refusé,
+  jamais approximé. Convertisseurs R2DBC personnalisés.
 - Pagination (`Pageable`, `Sort` dynamiques).
 - `WebFilter` globaux : non analysés, à déclarer en `requestGates` s'ils peuvent rejeter.
 
@@ -34,3 +35,9 @@ Les raisons exactes et leur fréquence sont dans `aeris-report.html`. Principale
   les tests différentiels, jamais exécutées telles quelles.
 - **Écritures par élément** (`saveAll`, `flatMap(repo::save)`) : étendre `EACH` aux
   écritures demande des identifiants capturés par élément et un `idMap` indexé.
+- **Lecture d'un enfant par sa propre clé** : une entité scopée par parent dont une
+  lecture passe par sa clé sans restriction au parent perd son périmètre, même quand le
+  handler vérifie le parent juste après (`ProductVariantEntity`, 23 endpoints). Étendre
+  la preuve demande d'admettre une preuve *postérieure* à la lecture, et d'exiger que le
+  404 de l'enfant absent soit identique à celui du parent hors périmètre — sinon le corps
+  de la réponse divergerait.

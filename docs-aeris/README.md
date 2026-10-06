@@ -88,22 +88,26 @@ Mesures sur la copie du backend (4 389 fichiers Java, 1 953 endpoints) :
 
 | Classe | Endpoints | Sens |
 |---|---|---|
-| `LOCAL_READ_SAFE` | 254 | Lectures servies localement, prouvées limitées au périmètre de session |
+| `LOCAL_READ_SAFE` | 294 | Lectures servies localement, prouvées limitées au périmètre de session |
 | `REPLAYABLE` | 47 | Écritures sans lecture d'état partagé, rejouées une fois |
-| `SPECULATIVE` | 189 | Écritures dépendant de données partagées : provisoires, revalidées par le serveur |
-| `ONLINE_REQUIRED` | 240 | Effet externe, lecture non bornée au périmètre, pas d'idempotence… |
-| `UNSUPPORTED` | 1 223 | Le compilateur n'a pas pu prouver la sémantique (raison précise dans le rapport) |
+| `SPECULATIVE` | 249 | Écritures dépendant de données partagées : provisoires, revalidées par le serveur |
+| `ONLINE_REQUIRED` | 307 | Effet externe, lecture non bornée au périmètre, pas d'idempotence… |
+| `UNSUPPORTED` | 1 056 | Le compilateur n'a pas pu prouver la sémantique (raison précise dans le rapport) |
 
-- **490 endpoints utilisables hors ligne**, tous accompagnés de preuves (fichier/ligne/hash).
-- **Autorisations compilées** : les 450 endpoints locaux protégés par
+- **590 endpoints utilisables hors ligne**, tous accompagnés de preuves (fichier/ligne/hash).
+- **Autorisations compilées** : les endpoints locaux protégés par
   `@PreAuthorize("@businessAccessPolicy…")` ont leur politique compilée depuis le code Java.
-- **176 projections sur 177** déduites du code correspondent exactement au schéma
-  PostgreSQL réel ; la 177ᵉ (`tp.crm_action`) diverge réellement du code Java et est
-  automatiquement exclue (`aeris analyze --database`).
-- **Parité différentielle** contre le backend Spring en fonctionnement : 233 requêtes
-  sur 254 endpoints de lecture, **233 identiques, 0 divergence** (statut et corps, données
-  réelles, autorisations comprises), et 7/7 sur les écritures de points de vente — voir
-  [tests.md](tests.md).
+- **204 projections** déduites du code, vérifiées contre le schéma PostgreSQL réel ;
+  celles qui divergent du code Java sont automatiquement exclues (`aeris analyze --database`).
+- **Parité différentielle** contre le backend Spring en fonctionnement : 291 requêtes
+  sur 294 endpoints de lecture, **291 identiques, 0 divergence** (statut et corps).
+  À lire avec sa limite : **269 de ces 291 comparaisons sont des `403` identiques**, parce
+  que la session de test n'obtient pas de jeton porteur vérifié. Ce qui est donc prouvé,
+  c'est que l'autorisation compilée refuse exactement comme le backend ; le chemin de
+  données n'est exercé que par 15 réponses `200` et 7 `404`. Voir [tests.md](tests.md).
+- **Le chemin d'écriture n'est pas encore vérifié contre le backend réel** : les 296
+  endpoints `REPLAYABLE`/`SPECULATIVE` portent un contrat de synchronisation que le mode
+  `writes` des tests différentiels n'a jamais confronté à des mutations réelles.
 - **Démonstration réelle** : création et modification hors ligne, rejeu via la Gateway,
   identifiant serveur remappé, convergence (`example/aeris-real-backend-demo.ts`).
 - `GET /api/sales-points` est classé `ONLINE_REQUIRED` : le compilateur a détecté que
