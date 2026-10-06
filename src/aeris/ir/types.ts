@@ -377,6 +377,12 @@ export interface Projection {
   scope: readonly Filter[];
   /** Reference data shared by every session; requires explicit configuration. */
   public: boolean;
+  /**
+   * Child rows scoped through their parent: a row is visible when the row of
+   * `entity` whose key equals `row[field]` is visible (document lines, items…).
+   * When the parent leaves the scope, devices delete its children locally.
+   */
+  parent?: { field: string; entity: string };
   /** Optional optimistic-lock property. */
   version?: string;
 }

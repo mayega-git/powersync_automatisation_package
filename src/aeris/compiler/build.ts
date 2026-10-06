@@ -143,7 +143,10 @@ export function buildReport(artifact: AerisArtifact, sourceFiles: number, durati
     projections: artifact.projections.map((projection) => ({
       entity: projection.entity,
       table: `${projection.schema === undefined ? '' : `${projection.schema}.`}${projection.table}`,
-      scope: projection.scope.map((filter) => `${filter.field} = session.${filter.value?.k === 'ctx' ? filter.value.name : '?'}`),
+      scope: [
+        ...projection.scope.map((filter) => `${filter.field} = session.${filter.value?.k === 'ctx' ? filter.value.name : '?'}`),
+        ...(projection.parent === undefined ? [] : [`${projection.parent.field} -> ${projection.parent.entity.split('.').at(-1)}`]),
+      ],
       public: projection.public,
     })),
     topBlockers: [...blockers].sort((a, b) => b[1] - a[1]).slice(0, 40).map(([reason, endpoints]) => ({ reason, endpoints })),

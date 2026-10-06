@@ -78,6 +78,18 @@ d'une entité est l'intersection des gardes de toutes ses requêtes. Une requêt
 le garantit pas rend son endpoint `ONLINE_REQUIRED` : son résultat serveur peut
 contenir des lignes que l'appareil n'a pas (et ne doit pas avoir).
 
+**Périmètre par parent.** Une entité enfant ne porte souvent aucun claim de session
+(lignes d'un document, items d'un bundle, sous-type d'un produit, ressources d'une
+prestation). Si **chaque** lecture de cette entité est restreinte à une ligne parente
+déjà prouvée — un filtre `colonne = <ligne parente>.<clé>`, ou la même expression de
+clé que la lecture parente a utilisée (la forme `GET /parents/{id}/enfants`) — alors
+l'enfant est visible exactement quand son parent l'est. Le compilateur l'écrit dans
+la projection (`parent: { field, entity }`) au lieu de refuser l'endpoint. La preuve
+reste locale à chaque programme : la lecture de la ligne parente est elle-même une
+requête vérifiée, et une seule lecture non restreinte de l'enfant suffit à retirer le
+périmètre de toute l'entité. Les chaînes sont suivies (petit-enfant), les cycles et
+les parents déclarés publics sont rejetés par le validateur d'IR.
+
 ## Sorties (`.aeris/`)
 
 - `aeris-artifact.json` : l'IR complet (endpoints, programmes, projections, vecteurs de test).

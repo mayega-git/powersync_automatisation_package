@@ -54,7 +54,7 @@ export function instantText(text: string): string {
   return `${base}.${trimmed.padEnd(groups, '0')}Z`;
 }
 
-function scopeWhere(projection: Projection, claims: SessionClaims, params: unknown[]): string | undefined {
+function scopeWhere(projection: Projection, claims: SessionClaims, params: unknown[], projections: ReadonlyMap<string, Projection>): string | undefined {
   if (projection.public) return 'TRUE';
   const parts: string[] = [];
   for (const filter of projection.scope) {
@@ -64,7 +64,23 @@ function scopeWhere(projection: Projection, claims: SessionClaims, params: unkno
     params.push(String(claim));
     parts.push(`${quoteIdent(column)}::text = $${params.length}`);
   }
+  if (projection.parent !== undefined) {
+    // Visible exactly when the parent row is visible.
+    const parent = projections.get(projection.parent.entity)!;
+    const parentWhere = scopeWhere(parent, claims, params, projections);
+    if (parentWhere === undefined) return undefined;
+    const field = projection.columns.find((candidate) => candidate.name === projection.parent!.field)!.column;
+    const parentKey = parent.columns.find((candidate) => candidate.name === parent.key)!.column;
+    parts.push(`${quoteIdent(field)} IN (SELECT ${quoteIdent(parentKey)} FROM ${qualifiedTable(parent)} WHERE ${parentWhere})`);
+  }
   return parts.length === 0 ? undefined : parts.join(' AND ');
+}
+
+/** Projections ordered so that a parent always comes before its children. */
+function parentsFirst(projections: readonly Projection[]): Projection[] {
+  const byEntity = new Map(projections.map((projection) => [projection.entity, projection]));
+  const depth = (projection: Projection): number => (projection.parent === undefined ? 0 : 1 + depth(byEntity.get(projection.parent.entity)!));
+  return [...projections].sort((a, b) => depth(a) - depth(b));
 }
 
 function selectList(projection: Projection): string {
@@ -79,7 +95,11 @@ function rowOf(projection: Projection, raw: Record<string, unknown>): Record<str
 
 /** Snapshot and delta reads of the projections, always restricted to the caller's scope. */
 export class ProjectionReader {
-  constructor(private readonly pool: pg.Pool, private readonly artifact: AerisArtifact, private readonly schema = 'aeris') {}
+  private readonly projections: ReadonlyMap<string, Projection>;
+
+  constructor(private readonly pool: pg.Pool, private readonly artifact: AerisArtifact, private readonly schema = 'aeris') {
+    this.projections = new Map(artifact.projections.map((projection) => [projection.entity, projection]));
+  }
 
   private async readOnly<T>(work: (client: pg.PoolClient) => Promise<T>): Promise<T> {
     const client = await this.pool.connect();
@@ -102,7 +122,7 @@ export class ProjectionReader {
       const entities: Record<string, Record<string, JsonValue>[]> = {};
       for (const projection of this.artifact.projections) {
         const params: unknown[] = [];
-        const where = scopeWhere(projection, claims, params);
+        const where = scopeWhere(projection, claims, params, this.projections);
         if (where === undefined) {
           entities[projection.entity] = [];
           continue;
@@ -148,7 +168,7 @@ export class ProjectionReader {
         const projection = byTable.get(table)!;
         const keyColumn = projection.columns.find((column) => column.name === projection.key)!;
         const params: unknown[] = [];
-        const where = scopeWhere(projection, claims, params);
+        const where = scopeWhere(projection, claims, params, this.projections);
         const visible = new Map<string, Record<string, JsonValue>>();
         if (where !== undefined) {
           params.push([...keys]);
@@ -169,6 +189,32 @@ export class ProjectionReader {
             : { entity: projection.entity, op: 'upsert', key: typedKey, row });
         }
       }
+      // A parent that became visible makes its existing children visible too (they did not change themselves).
+      const upserted = new Map<string, Set<string>>();
+      for (const change of changes) {
+        if (change.op === 'upsert') upserted.set(change.entity, (upserted.get(change.entity) ?? new Set()).add(String(change.key).toLowerCase()));
+      }
+      for (const child of parentsFirst(this.artifact.projections)) {
+        const parentKeys = child.parent === undefined ? undefined : upserted.get(child.parent.entity);
+        if (parentKeys === undefined || parentKeys.size === 0) continue;
+        const params: unknown[] = [];
+        const where = scopeWhere(child, claims, params, this.projections);
+        if (where === undefined) continue;
+        const field = child.columns.find((column) => column.name === child.parent!.field)!.column;
+        const keyColumn = child.columns.find((column) => column.name === child.key)!;
+        params.push([...parentKeys]);
+        const result = await client.query<Record<string, unknown>>(
+          `SELECT ${selectList(child)} FROM ${qualifiedTable(child)} WHERE (${where}) AND ${quoteIdent(field)}::text = ANY($${params.length})`,
+          params,
+        );
+        const already = new Set(changes.filter((change) => change.entity === child.entity).map((change) => String(change.key).toLowerCase()));
+        for (const raw of result.rows) {
+          const key = String(raw[keyColumn.column]).toLowerCase();
+          if (already.has(key)) continue;
+          changes.push({ entity: child.entity, op: 'upsert', key: toWire(raw[keyColumn.column], keyColumn.type), row: rowOf(child, raw) });
+          upserted.set(child.entity, (upserted.get(child.entity) ?? new Set()).add(key));
+        }
+      }
       return { projectionVersion: this.artifact.projectionVersion, cursor, changes, hasMore: log.rows.length === pageSize };
     });
   }
@@ -184,7 +230,7 @@ export class ProjectionReader {
       const entities: Record<string, Record<string, JsonValue>[]> = {};
       for (const projection of this.artifact.projections) {
         const params: unknown[] = [];
-        const where = scopeWhere(projection, claims, params);
+        const where = scopeWhere(projection, claims, params, this.projections);
         if (where === undefined) {
           entities[projection.entity] = [];
           continue;
@@ -200,12 +246,14 @@ export class ProjectionReader {
   async foreignKeys(projection: Projection, claims: SessionClaims, limit: number): Promise<JsonValue[]> {
     if (projection.public) return [];
     const params: unknown[] = [];
-    const where = scopeWhere(projection, claims, params);
+    const where = scopeWhere(projection, claims, params, this.projections);
     if (where === undefined) return [];
     const keyColumn = projection.columns.find((column) => column.name === projection.key)!;
     params.push(limit);
     const result = await this.pool.query<Record<string, unknown>>(
-      `SELECT ${quoteIdent(keyColumn.column)} AS k FROM ${qualifiedTable(projection)} WHERE NOT (${where}) LIMIT $${params.length}`,
+      // COALESCE: a null parent reference makes the scope test unknown, and such
+      // a row is invisible, so the probe must list it rather than drop it.
+      `SELECT ${quoteIdent(keyColumn.column)} AS k FROM ${qualifiedTable(projection)} WHERE NOT COALESCE((${where}), FALSE) LIMIT $${params.length}`,
       params,
     );
     return result.rows.map((row) => toWire(row.k, keyColumn.type));

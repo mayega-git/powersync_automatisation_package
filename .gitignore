@@ -8,3 +8,4 @@ EXEMPLE-INSTALLATION-BACKEND.md
 *.tgz
 .aeris/
 .scratch/
+.~lock.*#

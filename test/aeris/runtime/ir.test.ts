@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { canonicalJson, canonicalDigest } from '../../../src/aeris/ir/canonical.js';
 import { importPublicKey, signArtifact, verifyArtifact } from '../../../src/aeris/ir/signing.js';
 import { AerisValidationError, validateArtifact } from '../../../src/aeris/ir/validate.js';
-import type { AerisArtifact, EndpointPlan } from '../../../src/aeris/ir/types.js';
+import type { AerisArtifact, EndpointPlan, Projection } from '../../../src/aeris/ir/types.js';
 import { artifact, keyPair } from './fixtures.js';
 
 function withEndpoint(change: (plan: EndpointPlan) => EndpointPlan, index = 2): AerisArtifact {
@@ -90,6 +90,31 @@ describe('validateArtifact', () => {
     const base = artifact();
     const unscoped = { ...base, projections: [{ ...base.projections[0]!, scope: [] }] };
     expect(() => validateArtifact(unscoped)).toThrow(/public/);
+  });
+
+  it('accepts a projection scoped through a parent and checks the parent it names', () => {
+    const base = artifact();
+    const lines: Projection = {
+      entity: 'demo.Line',
+      table: 'lines',
+      key: 'id',
+      columns: [
+        { name: 'id', column: 'id', type: { type: 'uuid', nullable: false } },
+        { name: 'pointId', column: 'point_id', type: { type: 'uuid', nullable: false } },
+      ],
+      scope: [],
+      public: false,
+      parent: { field: 'pointId', entity: base.projections[0]!.entity },
+    };
+    const withParent = (change: Partial<Projection>) => ({ ...base, projections: [...base.projections, { ...lines, ...change }] });
+
+    expect(() => validateArtifact(withParent({}))).not.toThrow();
+    expect(() => validateArtifact(withParent({ parent: { field: 'pointId', entity: 'demo.Missing' } }))).toThrow(/not a projection/);
+    expect(() => validateArtifact(withParent({ parent: { field: 'nope', entity: base.projections[0]!.entity } }))).toThrow(/not a column/);
+    expect(() => validateArtifact(withParent({ parent: { field: 'pointId', entity: 'demo.Line' } }))).toThrow(/cyclic/);
+    expect(() => validateArtifact(withParent({ public: true }))).toThrow(/public projection cannot be scoped through a parent/);
+    const publicParent = { ...base, projections: [{ ...base.projections[0]!, scope: [], public: true }, lines] };
+    expect(() => validateArtifact(publicParent)).toThrow(/public data/);
   });
 
   it('refuses context claims the endpoint does not declare', () => {

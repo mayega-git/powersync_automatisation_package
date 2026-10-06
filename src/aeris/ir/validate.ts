@@ -66,6 +66,19 @@ export function validateArtifact(value: unknown): asserts value is AerisArtifact
     projections.set(projection.entity, projection);
   }
 
+  // Parent scopes must name a declared, non-public projection, without cycles.
+  for (const projection of projections.values()) {
+    const seen = new Set<string>([projection.entity]);
+    for (let parent = projection.parent; parent !== undefined;) {
+      const target = projections.get(parent.entity);
+      if (target === undefined) { problems.push(`projection ${projection.entity}: parent ${parent.entity} is not a projection`); break; }
+      if (target.public) { problems.push(`projection ${projection.entity}: parent ${parent.entity} is public data`); break; }
+      if (seen.has(target.entity)) { problems.push(`projection ${projection.entity}: cyclic parent scopes`); break; }
+      seen.add(target.entity);
+      parent = target.parent;
+    }
+  }
+
   const ids = new Set<string>();
   const shapes = new Map<string, string>();
   for (const [index, endpoint] of artifact.endpoints.entries()) {
@@ -135,8 +148,12 @@ function validateProjection(projection: Projection, where: string, problems: str
   }
   if (!Array.isArray(projection.scope)) problems.push(`${where}.scope must be an array`);
   else {
-    if (projection.scope.length === 0 && projection.public !== true) {
+    if (projection.scope.length === 0 && projection.public !== true && projection.parent === undefined) {
       problems.push(`${where}: a projection without a scope must be declared public`);
+    }
+    if (projection.parent !== undefined) {
+      if (!names.has(projection.parent.field)) problems.push(`${where}: parent field ${projection.parent.field} is not a column`);
+      if (projection.public === true) problems.push(`${where}: a public projection cannot be scoped through a parent`);
     }
     for (const filter of projection.scope) {
       if (!names.has(filter.field)) problems.push(`${where}: scope field ${filter.field} is not a column`);

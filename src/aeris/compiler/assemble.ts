@@ -19,7 +19,7 @@ import {
 } from '../ir/types.js';
 import { validateArtifact } from '../ir/validate.js';
 import { globMatch, type CompilerConfig } from './config.js';
-import { impliedPairs, insertedPairs, pairKey, queryGuards, type ScopePair } from './scope.js';
+import { impliedPairs, insertedPairs, pairKey, queryGuards, type QueryGuard, type ScopePair } from './scope.js';
 import type { EndpointDraft } from './spring/endpoints.js';
 import type { EntityModel } from './spring/persistence.js';
 import type { ColumnConstraints } from './schema-check.js';
@@ -47,6 +47,8 @@ interface EntityScope {
   public: boolean;
   /** property -> claim */
   filters: Map<string, string>;
+  /** Scoped through a parent row instead of a claim of its own. */
+  parent?: { field: string; entity: string };
   reason?: string;
 }
 
@@ -140,6 +142,7 @@ function demote(plan: EndpointPlan, offlineClass: OfflineClass, reason: string):
 
 function inferScopes(drafts: readonly EndpointDraft[], entities: ReadonlyMap<string, EntityModel>, config: CompilerConfig): Map<string, EntityScope> {
   const out = new Map<string, EntityScope>();
+  const allGuards = drafts.flatMap((draft) => queryGuards(draft.program!, keysOf(entities)));
   for (const entity of entities.values()) {
     if (config.publicEntities.includes(entity.fqn) || config.publicEntities.includes(entity.decl.simple) || entity.decl.annotations.some((annotation) => annotation.name === 'AerisPublic')) {
       out.set(entity.fqn, { public: true, filters: new Map() });
@@ -158,12 +161,9 @@ function inferScopes(drafts: readonly EndpointDraft[], entities: ReadonlyMap<str
         if (model !== undefined && (model.type.type === 'uuid' || model.type.type === 'string') && !model.type.list) candidates.add(pairKey(property, claim));
       }
     }
-    const guardSets: Set<ScopePair>[] = [];
+    const guardSets = allGuards.filter((guard) => guard.entity === entity.fqn).map((guard) => guard.pairs);
     const inserted = new Set<ScopePair>();
-    for (const draft of drafts) {
-      for (const guard of queryGuards(draft.program!, keysOf(entities))) if (guard.entity === entity.fqn) guardSets.push(guard.pairs);
-      for (const pair of insertedPairs(draft.program!, entity.fqn)) inserted.add(pair);
-    }
+    for (const draft of drafts) for (const pair of insertedPairs(draft.program!, entity.fqn)) inserted.add(pair);
     // Equalities with a session claim that the backend's own queries use are candidates too
     // (e.g. userId = session.userId): a device then holds only what those queries return for it.
     for (const set of guardSets) {
@@ -173,7 +173,7 @@ function inferScopes(drafts: readonly EndpointDraft[], entities: ReadonlyMap<str
       }
     }
     if (candidates.size === 0) {
-      out.set(entity.fqn, { public: false, filters: new Map(), reason: `${entity.decl.simple} has no property carrying a session claim (configure scopeClaims or publicEntities).` });
+      out.set(entity.fqn, { public: false, filters: new Map(), reason: `${entity.decl.simple} has no property carrying a session claim, and its reads are not all restricted to one row of a scoped entity (configure scopeClaims or publicEntities).` });
       continue;
     }
     let chosen: ScopePair[];
@@ -190,12 +190,52 @@ function inferScopes(drafts: readonly EndpointDraft[], entities: ReadonlyMap<str
       }
     }
     if (chosen.length === 0) {
-      out.set(entity.fqn, { public: false, filters: new Map(), reason: `No query on ${entity.decl.simple} is restricted to the session.` });
+      out.set(entity.fqn, { public: false, filters: new Map(), reason: `No query on ${entity.decl.simple} is restricted to the session, directly or through a parent row.` });
       continue;
     }
     out.set(entity.fqn, { public: false, filters: new Map(chosen.map((pair) => pair.split('=') as [string, string])) });
   }
+  resolveParentScopes(out, allGuards, entities);
   return out;
+}
+
+/**
+ * Entities carrying no session claim of their own, but whose every read is
+ * restricted to one row of another entity (document lines, order items): they
+ * are visible exactly when that row is. Repeated to a fixpoint so a scope
+ * found for a child also serves as a parent for its own children.
+ */
+function resolveParentScopes(scopes: Map<string, EntityScope>, guards: readonly QueryGuard[], entities: ReadonlyMap<string, EntityModel>): void {
+  const resolved = (scope: EntityScope) => scope.public || scope.filters.size > 0 || scope.parent !== undefined;
+  const cyclic = (from: string, through: string): boolean => {
+    for (let at: string | undefined = through; at !== undefined; at = scopes.get(at)?.parent?.entity) if (at === from) return true;
+    return false;
+  };
+  for (let pass = 0; pass < scopes.size; pass += 1) {
+    let progress = false;
+    for (const [fqn, scope] of scopes) {
+      if (resolved(scope)) continue;
+      const own = guards.filter((guard) => guard.entity === fqn);
+      if (own.length === 0) continue;
+      // Only a parent every single read agrees on: one unrestricted read would
+      // let the server return rows the device does not hold.
+      const common = own.reduce<Set<string>>(
+        (kept, guard) => new Set(guard.parents.filter((parent) => kept.has(`${parent.field}=${parent.entity}`)).map((parent) => `${parent.field}=${parent.entity}`)),
+        new Set(own[0]!.parents.map((parent) => `${parent.field}=${parent.entity}`)),
+      );
+      const picked = [...common]
+        .map((pair) => ({ field: pair.slice(0, pair.indexOf('=')), entity: pair.slice(pair.indexOf('=') + 1) }))
+        .filter((parent) => {
+          const target = scopes.get(parent.entity);
+          return target !== undefined && !target.public && resolved(target) && !cyclic(fqn, parent.entity) && entities.get(fqn)?.properties.has(parent.field) === true;
+        })
+        .sort((a, b) => (a.entity === b.entity ? a.field.localeCompare(b.field) : a.entity.localeCompare(b.entity)))[0];
+      if (picked === undefined) continue;
+      scopes.set(fqn, { public: false, filters: new Map(), parent: picked });
+      progress = true;
+    }
+    if (!progress) return;
+  }
 }
 
 function projectionOf(entity: EntityModel, scope: EntityScope, constraints?: ReadonlyMap<string, ColumnConstraints>): Projection {
@@ -216,6 +256,7 @@ function projectionOf(entity: EntityModel, scope: EntityScope, constraints?: Rea
     }),
     scope: scopeFilters,
     public: scope.public,
+    ...(scope.parent === undefined ? {} : { parent: scope.parent }),
     ...(entity.version === undefined ? {} : { version: entity.version }),
   };
 }
@@ -263,20 +304,15 @@ function classify(draftIn: EndpointDraft, scopes: ReadonlyMap<string, EntityScop
 
   for (const entity of new Set([...draft.reads, ...draft.writes])) {
     const scope = scopes.get(entity);
-    if (scope === undefined || (!scope.public && scope.filters.size === 0)) {
+    if (scope === undefined || (!scope.public && scope.filters.size === 0 && scope.parent === undefined)) {
       return offline('ONLINE_REQUIRED', [scope?.reason ?? `${entities.get(entity)?.decl.simple ?? entity} cannot be projected without leaking other sessions' data.`]);
     }
   }
   for (const guard of queryGuards(program, keysOf(entities))) {
-    const scope = scopes.get(guard.entity)!;
-    if (scope.public) continue;
-    for (const [field, claim] of scope.filters) {
-      if (!guard.pairs.has(pairKey(field, claim))) {
-        return offline('ONLINE_REQUIRED', [`A read of ${entities.get(guard.entity)!.decl.simple} is not restricted to ${field} = session.${claim}: its server result can include rows a device does not hold.`]);
-      }
-    }
+    const unmet = unrestricted(guard, scopes, entities);
+    if (unmet !== undefined) return offline('ONLINE_REQUIRED', [unmet]);
   }
-  const scopeClaims = new Set([...draft.reads, ...draft.writes].flatMap((entity) => [...(scopes.get(entity)?.filters.values() ?? [])]));
+  const scopeClaims = new Set([...draft.reads, ...draft.writes].flatMap((entity) => [...claimsOf(entity, scopes)]));
   const auth = { ...draft.auth, context: [...new Set([...draft.auth.context, ...scopeClaims])].sort() };
 
   let offlineClass: OfflineClass;
@@ -361,6 +397,51 @@ function serverCheckedWrites(draft: EndpointDraft, entities: ReadonlyMap<string,
 const keyMaps = new WeakMap<ReadonlyMap<string, EntityModel>, Map<string, string>>();
 
 /** Key property of each entity (memoized per entity map). */
+/**
+ * Why a query's server result can include rows the device does not hold, or
+ * `undefined` when it cannot. A claim-scoped entity needs the equality the
+ * projection uses; a parent-scoped one needs the query to be restricted to a
+ * parent row that is itself in scope — a row obtained by another query of this
+ * same program, checked in turn.
+ */
+function unrestricted(guard: QueryGuard, scopes: ReadonlyMap<string, EntityScope>, entities: ReadonlyMap<string, EntityModel>): string | undefined {
+  const name = (entity: string) => entities.get(entity)?.decl.simple ?? entity;
+  const scope = scopes.get(guard.entity)!;
+  if (scope.public) return undefined;
+  for (const [field, claim] of scope.filters) {
+    if (!guard.pairs.has(pairKey(field, claim))) {
+      return `A read of ${name(guard.entity)} is not restricted to ${field} = session.${claim}: its server result can include rows a device does not hold.`;
+    }
+  }
+  if (scope.parent === undefined) return undefined;
+  const { field, entity: parent } = scope.parent;
+  const candidates = guard.parents.filter((candidate) => candidate.field === field && candidate.entity === parent);
+  if (candidates.length === 0) {
+    return `A read of ${name(guard.entity)} is not restricted to one ${name(parent)} through ${field}: its server result can include rows a device does not hold.`;
+  }
+  const parentScope = scopes.get(parent)!;
+  for (const [parentField, claim] of parentScope.filters) {
+    if (!candidates.some((candidate) => candidate.pairs.has(pairKey(parentField, claim)))) {
+      return `A read of ${name(guard.entity)} goes through a ${name(parent)} that is not restricted to ${parentField} = session.${claim}.`;
+    }
+  }
+  return undefined;
+}
+
+/** Session claims a projection depends on, following parent scopes up to their claims. */
+function claimsOf(entity: string, scopes: ReadonlyMap<string, EntityScope>): Set<string> {
+  const out = new Set<string>();
+  const seen = new Set<string>();
+  for (let at: string | undefined = entity; at !== undefined && !seen.has(at);) {
+    seen.add(at);
+    const scope = scopes.get(at);
+    if (scope === undefined) break;
+    for (const claim of scope.filters.values()) out.add(claim);
+    at = scope.parent?.entity;
+  }
+  return out;
+}
+
 function keysOf(entities: ReadonlyMap<string, EntityModel>): Map<string, string> {
   let keys = keyMaps.get(entities);
   if (keys === undefined) {

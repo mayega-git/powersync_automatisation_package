@@ -149,6 +149,8 @@ export class AerisRuntime {
   private router: EndpointRouter | undefined;
   private plans = new Map<string, EndpointPlan>();
   private projections = new Map<string, Projection>();
+  /** Per entity, the projections scoped through it: deleting a row deletes theirs. */
+  private children = new Map<string, Projection[]>();
   private executor: Executor | undefined;
   private manifest: PolicyManifest | undefined;
   private listeners = new Set<(event: RuntimeEvent) => void>();
@@ -280,6 +282,11 @@ export class AerisRuntime {
     this.router = new EndpointRouter(artifact.endpoints);
     this.plans = new Map(artifact.endpoints.map((plan) => [plan.id, plan]));
     this.projections = new Map(artifact.projections.map((projection) => [projection.entity, projection]));
+    this.children = new Map();
+    for (const projection of artifact.projections) {
+      if (projection.parent === undefined) continue;
+      this.children.set(projection.parent.entity, [...(this.children.get(projection.parent.entity) ?? []), projection]);
+    }
     this.executor = new Executor({ projections: this.projections, serverTimeZone: artifact.policies.serverTimeZone });
     await this.options.store.transaction(async (tx) => {
       if (persist) await tx.metaSet(META.envelope, envelope as JsonValue);
@@ -723,9 +730,24 @@ export class AerisRuntime {
     for (const change of changes) {
       const projection = this.projections.get(change.entity);
       if (projection === undefined) continue;
-      if (change.op === 'delete') await tx.delete(change.entity, change.key);
+      if (change.op === 'delete') await this.deleteRow(tx, projection, change.key);
       else if (change.row !== undefined) await tx.put(change.entity, this.wireRow(projection, change.row));
     }
+  }
+
+  /**
+   * Deletes a row and, for every projection scoped through its entity, the
+   * rows pointing at it. The gateway reports a child leaving the scope only
+   * when the child row itself changed; a parent that left the scope (deleted,
+   * or moved to another session) takes its children with it, and the device
+   * applies that locally rather than receiving one change per child.
+   */
+  private async deleteRow(tx: StoreTx, projection: Projection, key: JsonValue): Promise<void> {
+    for (const child of this.children.get(projection.entity) ?? []) {
+      const rows = await tx.find(child.entity, [{ field: child.parent!.field, cmp: 'eq', value: key }]);
+      for (const row of rows) await this.deleteRow(tx, child, row[child.key] ?? null);
+    }
+    await tx.delete(projection.entity, key);
   }
 
   private wireRow(projection: Projection, row: Record<string, JsonValue>): StoredRow {

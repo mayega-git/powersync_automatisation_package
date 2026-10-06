@@ -66,6 +66,11 @@ extraire le SQL (`setupSql(artifact)`) et le passer en migration.
 - **Périmètre.** Snapshot et delta appliquent le filtre de scope de chaque projection
   avec les claims vérifiés de l'appelant ; une ligne qui sort du périmètre est envoyée
   comme suppression.
+- **Périmètre par parent.** Une projection `parent` est filtrée par l'appartenance de
+  sa colonne aux clés des lignes parentes visibles (chaîne complète). Un parent qui
+  **entre** dans le périmètre fait envoyer ses enfants déjà existants, qui n'ont pas
+  changé eux-mêmes ; un parent qui en **sort** est envoyé comme suppression, et la
+  cascade sur ses enfants est faite par l'appareil, sans une ligne de delta par enfant.
 - **Exactement une fois.** Le registre `(sujet, operation_id)` répond aux rejeux avec
   le reçu stocké ; l'appel au backend porte toujours le même `Idempotency-Key`. Une
   opération en cours depuis plus de 2 minutes peut être reprise.

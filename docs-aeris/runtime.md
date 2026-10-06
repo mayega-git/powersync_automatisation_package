@@ -84,6 +84,10 @@ réévalue tout au rejeu.
 - Reçus : `COMMITTED` (remapping des identifiants locaux → serveur partout : lignes,
   outbox), `CONFLICT` / `REJECTED` (annulation de l'effet local et des dépendants),
   `RETRY` (backoff exponentiel avec jitter, même identifiant d'opération).
+- Un parent qui sort du périmètre emporte ses enfants : la Gateway n'annonce la
+  disparition d'une ligne enfant que si cette ligne a elle-même changé, donc
+  l'appareil supprime localement, en cascade, les lignes des projections scopées par
+  parent qui pointaient vers elle (chaîne complète, petits-enfants inclus).
 - Données serveur (snapshot, delta) appliquées par **rebase** : annulation des effets
   en attente, application de l'état serveur, ré-exécution déterministe des opérations
   en attente avec leurs valeurs capturées (horloge, identifiants).
