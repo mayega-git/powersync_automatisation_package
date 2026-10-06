@@ -15,6 +15,7 @@ export function definedNames(instrs: readonly Instr[]): Set<string> {
   for (const instr of instrs) {
     if (instr.op === 'QUERY' || instr.op === 'LET') out.add(instr.out);
     else if ((instr.op === 'INSERT' || instr.op === 'UPDATE') && instr.out !== undefined) out.add(instr.out);
+    else if (instr.op === 'EACH') out.add(instr.out);
     else if (instr.op === 'TRY') {
       const left = definedNames(instr.body);
       const right = definedNames(instr.fallback);

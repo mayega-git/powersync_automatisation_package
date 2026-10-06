@@ -210,6 +210,12 @@ export type Instr =
    * (Reactor onErrorReturn / onErrorResume on a Mono).
    */
   | { op: 'TRY'; body: readonly Instr[]; fallback: readonly Instr[] }
+  /**
+   * For each item of the list `of` (bound to `as`), runs the read-only `body`
+   * and collects `yield`; `out` receives the collected list. Variables of the
+   * body are local to one iteration (per-element lookups: Flux.flatMap).
+   */
+  | { op: 'EACH'; of: Expr; as: string; body: readonly Instr[]; yield: Expr; out: string }
   /** Inserts one row; `out` receives the stored record. */
   | { op: 'INSERT'; entity: string; values: Readonly<Record<string, Expr>>; out?: string }
   /** Updates the row with the given key; fails when it does not exist. */

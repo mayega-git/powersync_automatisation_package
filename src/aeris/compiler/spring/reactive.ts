@@ -1,12 +1,13 @@
 import type { Expr, Instr } from '../../ir/types.js';
 import type { JType } from '../java/model.js';
 import type { SyntaxNode } from '../java/parser.js';
-import { attempt, branch, mergeEmission } from './branching.js';
+import { attempt, branch, mergeEmission, restoreObjects, snapshotObjects } from './branching.js';
 import { sortExpr } from './library.js';
 import type { Evaluator, Scope } from './evaluator.js';
 import {
   cond,
   FALSE,
+  getf,
   isLit,
   lit,
   NULL,
@@ -44,6 +45,7 @@ function fallible(instrs: readonly Instr[]): boolean {
     if (instr.op === 'LET' || instr.op === 'EMIT_LOCAL_EVENT' || instr.op === 'QUEUE_INTENT') return false;
     if (instr.op === 'IF') return fallible(instr.then) || fallible(instr.else);
     if (instr.op === 'TRY') return fallible(instr.fallback);
+    if (instr.op === 'EACH') return true;
     return true;
   });
 }
@@ -134,6 +136,7 @@ function readOnly(instrs: readonly Instr[]): boolean {
   return instrs.every((instr) => {
     if (instr.op === 'IF') return readOnly(instr.then) && readOnly(instr.else);
     if (instr.op === 'TRY') return readOnly(instr.body) && readOnly(instr.fallback);
+    if (instr.op === 'EACH') return readOnly(instr.body);
     return instr.op === 'QUERY' || instr.op === 'LET' || instr.op === 'ASSERT';
   });
 }
@@ -394,15 +397,36 @@ function fluxCall(ev: Evaluator, source: FluxSV, name: string, args: SV[], node:
         run: (block) => {
           const { list, element } = source.run(block);
           const as = block.fresh('it');
-          const inner = pureApply(ev, fn!, [element(vr(as))], block, node, scope, `Flux.${name}()`);
-          if (inner.t !== 'mono') throw new Unsupported(`Flux.${name}() mapper is not a Mono`, node);
-          const probe = attempt(block, (child) => inner.run(child));
-          if (!probe.outcome.ok || probe.instrs.length > 0 || !isLit(probe.outcome.value.empty, false)) {
-            throw new Unsupported(`Flux.${name}() runs an operation per element`, node);
+          const before = snapshotObjects(ev.objects);
+          const probe = attempt(block, (child) => {
+            const inner = ev.apply(fn!, [element(vr(as))], child, node, scope);
+            if (inner.t !== 'mono') throw new Unsupported(`Flux.${name}() mapper is not a Mono`, node);
+            return inner.run(child);
+          });
+          const mutated = [...before].some(([target, fields]) => [...target.fields].some(([key, value]) => fields.get(key) !== value));
+          restoreObjects(before);
+          if (mutated) throw new Unsupported(`Flux.${name}() mutates shared objects per element`, node);
+          if (!probe.outcome.ok) throw new Unsupported(`Flux.${name}() fails for every element`, node);
+          const emission = probe.outcome.value;
+          const jt = elemOf(emission.value);
+          if (probe.instrs.length === 0 && isLit(emission.empty, false)) {
+            return { list: { k: 'map', of: list, as, body: ev.encode(emission.value) }, element: (item: Expr) => ev.view(item, jt) };
           }
-          const value = probe.outcome.value.value;
-          const jt = elemOf(value);
-          return { list: { k: 'map', of: list, as, body: ev.encode(value) }, element: (item: Expr) => ev.view(item, jt) };
+          if (!readOnly(probe.instrs)) throw new Unsupported(`Flux.${name}() writes per element`, node);
+          // Per-element lookups: one EACH; empty inner results contribute nothing (Reactor flattening).
+          const out = block.fresh('each');
+          block.emit({
+            op: 'EACH',
+            of: list,
+            as,
+            body: probe.instrs,
+            yield: { k: 'object', fields: { empty: emission.empty, value: cond(emission.empty, NULL, ev.encode(emission.value)) } },
+            out,
+          });
+          const kept = block.fresh('it');
+          const present: Expr = { k: 'filter', of: vr(out), as: kept, body: not(getf(vr(kept), 'empty')) };
+          const item = block.fresh('it');
+          return { list: { k: 'map', of: present, as: item, body: getf(vr(item), 'value') }, element: (value: Expr) => ev.view(value, jt) };
         },
       };
     case 'filter':

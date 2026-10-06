@@ -79,6 +79,10 @@ export function queryGuards(program: readonly Instr[]): QueryGuard[] {
         visit(instr.fallback);
         return;
       }
+      if (instr.op === 'EACH') {
+        visit(instr.body);
+        return;
+      }
       if (instr.op !== 'QUERY') return;
       const pairs = filterPairs(instr.where);
       if (instr.mode === 'one') {

@@ -330,6 +330,16 @@ function validateInstr(instr: Instr, scope: Set<string>, state: ProgramState, de
       }
       return thenEnds && elseEnds;
     }
+    case 'EACH': {
+      validateExpr(instr.of, scope, state, depth);
+      const inner = new Set(scope);
+      define(instr.as, inner, state);
+      const ends = validateBlock(instr.body, inner, state, depth + 1);
+      if (!readOnly(instr.body)) problems.push(`${where}: EACH bodies must be read-only and cannot return`);
+      if (!ends) validateExpr(instr.yield, inner, state, depth);
+      define(instr.out, scope, state);
+      return false;
+    }
     case 'TRY': {
       const bodyScope = new Set(scope);
       const fallbackScope = new Set(scope);
@@ -517,6 +527,7 @@ function readOnly(block: readonly Instr[]): boolean {
   return block.every((instr) => {
     if (instr.op === 'IF') return readOnly(instr.then) && readOnly(instr.else);
     if (instr.op === 'TRY') return readOnly(instr.body) && readOnly(instr.fallback);
+    if (instr.op === 'EACH') return readOnly(instr.body);
     return instr.op === 'QUERY' || instr.op === 'LET' || instr.op === 'ASSERT';
   });
 }

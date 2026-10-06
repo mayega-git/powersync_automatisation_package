@@ -98,6 +98,7 @@ export function walk(program: readonly Instr[]): Instr[] {
     out.push(instr);
     if (instr.op === 'IF') out.push(...walk(instr.then), ...walk(instr.else));
     if (instr.op === 'TRY') out.push(...walk(instr.body), ...walk(instr.fallback));
+    if (instr.op === 'EACH') out.push(...walk(instr.body));
   }
   return out;
 }

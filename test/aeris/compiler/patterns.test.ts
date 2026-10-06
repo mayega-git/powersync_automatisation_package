@@ -295,4 +295,82 @@ public class HeadlineController {
     expect(await ask([])).toEqual({ status: 200, body: 'none' });
     expect(await ask([line(1, ' ', 1, 'GOODS')])).toEqual({ status: 200, body: 'none' });
   });
+
+  it('compiles per-element lookups (Flux.flatMap to a Mono query) into an EACH, dropping empty results', async () => {
+    const artifact = await compileJava({ ...SOURCES,
+      'demo/orders/ProductEntity.java': `
+package demo.orders;
+import demo.common.PersistableEntity;
+import java.time.Instant;
+import java.util.UUID;
+import org.springframework.data.annotation.Id;
+import org.springframework.data.relational.core.mapping.Table;
+@Table(schema = "orders", name = "product")
+public record ProductEntity(@Id UUID id, UUID tenantId, String name, Instant createdAt, Instant updatedAt) implements PersistableEntity {}
+`,
+      'demo/orders/ProductRepository.java': `
+package demo.orders;
+import java.util.UUID;
+import org.springframework.data.repository.reactive.ReactiveCrudRepository;
+import reactor.core.publisher.Mono;
+public interface ProductRepository extends ReactiveCrudRepository<ProductEntity, UUID> {
+  Mono<ProductEntity> findByIdAndTenantId(UUID id, UUID tenantId);
+}
+`,
+      'demo/orders/ProductController.java': `
+package demo.orders;
+import demo.kernel.RequestContextHolder;
+import java.util.List;
+import java.util.UUID;
+import org.springframework.web.bind.annotation.*;
+import reactor.core.publisher.Mono;
+@RestController
+@RequestMapping("/api/orders")
+public class ProductController {
+  private final LinePort lines;
+  private final ProductRepository products;
+  public ProductController(LinePort lines, ProductRepository products) { this.lines = lines; this.products = products; }
+  @GetMapping("/{orderId}/products") public Mono<List<String>> names(@PathVariable UUID orderId) {
+    return RequestContextHolder.getRequiredContext().flatMap(ctx -> lines.forOrder(ctx.tenantId(), orderId)
+        .flatMap(line -> products.findByIdAndTenantId(line.id(), ctx.tenantId()).map(product -> product.name().toUpperCase()))
+        .collectList());
+  }
+}
+` });
+    const plan = endpoint(artifact, 'GET /api/orders/{orderId}/products');
+    expect(plan.offlineClass, plan.reasons.join('; ')).toBe('LOCAL_READ_SAFE');
+    expect(JSON.stringify(plan.program)).toContain('"op":"EACH"');
+    const product = (id: number, name: string, tenantId = TENANT) => ({ id: `00000000-0000-4000-8000-00000000000${id}`, tenantId, name, createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-01T00:00:00Z' });
+    const rows = {
+      'demo.orders.LineEntity': [line(1, 'a', 1, 'GOODS'), line(2, 'b', 1, 'GOODS'), line(3, 'c', 1, 'GOODS')],
+      'demo.orders.ProductEntity': [product(1, 'bolt'), product(3, 'cable'), product(2, 'foreign', '22222222-2222-4222-8222-222222222222')],
+    };
+    const result = await run(artifact, 'GET /api/orders/{orderId}/products', rows, { params: { orderId: ORDER }, context: { tenantId: TENANT } });
+    expect(result).toEqual({ status: 200, body: ['BOLT', 'CABLE'] });
+  });
+
+  it('compiles stream reduce with an identity into a fold', async () => {
+    const artifact = await compileJava({ ...SOURCES, 'demo/orders/TotalController.java': `
+package demo.orders;
+import demo.kernel.RequestContextHolder;
+import java.math.BigDecimal;
+import java.util.UUID;
+import org.springframework.web.bind.annotation.*;
+import reactor.core.publisher.Mono;
+@RestController
+@RequestMapping("/api/orders")
+public class TotalController {
+  private final LinePort lines;
+  public TotalController(LinePort lines) { this.lines = lines; }
+  @GetMapping("/{orderId}/total") public Mono<BigDecimal> total(@PathVariable UUID orderId) {
+    return RequestContextHolder.getRequiredContext().flatMap(ctx -> lines.forOrder(ctx.tenantId(), orderId).collectList())
+        .map(items -> items.stream().map(Line::amount).reduce(BigDecimal.ZERO, BigDecimal::add));
+  }
+}
+` });
+    const plan = endpoint(artifact, 'GET /api/orders/{orderId}/total');
+    expect(plan.offlineClass, plan.reasons.join('; ')).toBe('LOCAL_READ_SAFE');
+    const result = await run(artifact, 'GET /api/orders/{orderId}/total', { 'demo.orders.LineEntity': [line(1, 'a', 1.1, 'GOODS'), line(2, 'b', 2.25, 'GOODS')] }, { params: { orderId: ORDER }, context: { tenantId: TENANT } });
+    expect(result).toEqual({ status: 200, body: 3.35 });
+  });
 });

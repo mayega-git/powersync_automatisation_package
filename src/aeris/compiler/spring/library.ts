@@ -1,7 +1,7 @@
 import type { Expr } from '../../ir/types.js';
 import type { JType } from '../java/model.js';
 import type { SyntaxNode } from '../java/parser.js';
-import { attempt, branch, mergeEmission } from './branching.js';
+import { attempt, branch, foldPureInstrs, mergeEmission } from './branching.js';
 import { fieldTypeOf } from './persistence.js';
 import { mapElements } from './reactive.js';
 import type { Evaluator, Scope } from './evaluator.js';
@@ -631,6 +631,17 @@ function listMethod(ev: Evaluator, receiver: ListSV, name: string, args: SV[], n
         ev.apply(fn, [inner.env.get('__aeris_each__')!], inner.block, node, inner);
       }, node, scope);
       return { t: 'void' };
+    }
+    case 'reduce/2': {
+      // stream.reduce(identity, accumulator): a left fold, the accumulator must be a pure function.
+      const identity = args[0]!;
+      if (identity.t !== 'pure') throw new Unsupported('reduce() identity is not a value', node);
+      const acc = scope.block.fresh('acc');
+      const as = scope.block.fresh('it');
+      const probe = attempt(scope.block, (child) => ev.apply(args[1]!, [pure(vr(acc), identity.jt), element(vr(as))], child, node, scope));
+      if (!probe.outcome.ok || probe.outcome.value.t !== 'pure') throw new Unsupported('reduce() accumulator is not a pure value function', node);
+      const [body] = foldPureInstrs(probe.instrs, [probe.outcome.value.e]);
+      return pure({ k: 'fold', of: receiver.e, as, acc, init: identity.e, body: body! }, identity.jt);
     }
     case 'getFirst/0':
     case 'getLast/0': {

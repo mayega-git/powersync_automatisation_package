@@ -59,6 +59,11 @@ export function prettyProgram(program: readonly Instr[], indent = ''): string {
           lines.push(prettyProgram(instr.else, `${indent}  `));
         }
         break;
+      case 'EACH':
+        lines.push(`${indent}EACH ${instr.as} IN ${prettyExpr(instr.of)} -> ${instr.out}`);
+        lines.push(prettyProgram(instr.body, `${indent}  `));
+        lines.push(`${indent}  YIELD ${prettyExpr(instr.yield)}`);
+        break;
       case 'TRY':
         lines.push(`${indent}TRY`);
         lines.push(prettyProgram(instr.body, `${indent}  `));

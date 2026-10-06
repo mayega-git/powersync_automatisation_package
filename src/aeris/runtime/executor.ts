@@ -249,6 +249,18 @@ class Frame {
         return undefined;
       case 'IF':
         return truthy(this.eval(instr.test)) ? this.block(instr.then) : this.block(instr.else);
+      case 'EACH': {
+        const items = this.eval(instr.of);
+        if (!Array.isArray(items)) throw new AerisHttpError(500, 'NULL_DEREFERENCE', 'Iteration over a non-list value.');
+        const collected: JsonValue[] = [];
+        for (const item of items) {
+          this.vars.set(instr.as, item);
+          await this.block(instr.body);
+          collected.push(this.eval(instr.yield));
+        }
+        this.vars.set(instr.out, collected);
+        return undefined;
+      }
       case 'TRY': {
         // Both blocks are read-only (validated): only the variable bindings need undoing.
         const saved = new Map(this.vars);
