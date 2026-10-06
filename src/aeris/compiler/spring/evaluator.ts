@@ -3,7 +3,7 @@ import type { ErrorSpec, Evidence, EvidenceKind, Expr, FieldType, Filter } from 
 import { typeName, type FieldDecl, type JavaProject, type JType, type MethodDecl, type TypeDecl } from '../java/model.js';
 import { field, named, stringValue, type SyntaxNode } from '../java/parser.js';
 import type { CompilerConfig } from '../config.js';
-import { asBool, attempt, branch, Diverged, emitIf, mergeEmission, restoreObjects, snapshotObjects } from './branching.js';
+import { asBool, attempt, branch, Diverged, emitIf, foldPureInstrs, mergeEmission, restoreObjects, simplifyCond, snapshotObjects } from './branching.js';
 import { libraryInstance, libraryStatic, libraryStaticField } from './library.js';
 import { CRUD_METHODS, fieldTypeOf, type EntityModel, type PersistenceModel, type RepositoryModel } from './persistence.js';
 import { reactiveCall } from './reactive.js';
@@ -34,6 +34,7 @@ import {
   type Counters,
   type CriteriaCondition,
   type CriteriaSV,
+  type PureSV,
   type Emission,
   type ExceptionSV,
   type FluxSV,
@@ -55,7 +56,11 @@ export interface ErrorMapper {
   map(exception: ExceptionSV): ErrorSpec;
 }
 
-type Completion = { kind: 'normal' } | { kind: 'return'; value: SV };
+/**
+ * How a statement sequence completes: normally, by returning, or by returning
+ * only when `test` holds (otherwise execution continues after the statement).
+ */
+type Completion = { kind: 'normal' } | { kind: 'return'; value: SV } | { kind: 'partial'; test: Expr; value: SV };
 
 /** Mutable collections are objects with identity: lists keep `$items`, maps keep one field per literal key. */
 export const MUTABLE_LIST = 'aeris.MutableList';
@@ -240,6 +245,11 @@ export class Evaluator {
     }
     if (a.t === 'list' && b.t === 'list') return { ...a, e: cond(test, a.e, b.e) };
     if (a.t === 'list' && b.t === 'pure') return { ...a, e: cond(test, a.e, b.e) };
+    if ((a.t === 'obj' && a.cls === MUTABLE_LIST && b.t === 'list') || (b.t === 'obj' && b.cls === MUTABLE_LIST && a.t === 'list')) {
+      const left = a.t === 'list' ? a : this.readField(a as ObjSV, '$items') as ListSV;
+      const right = b.t === 'list' ? b : this.readField(b as ObjSV, '$items') as ListSV;
+      return { ...left, e: cond(test, left.e, right.e) };
+    }
     if (a.t === 'pure' && b.t === 'list') return { ...b, e: cond(test, a.e, b.e) };
     if (a.t === 'optional' && b.t === 'optional') {
       return { t: 'optional', value: this.merge(test, a.value, b.value), present: cond(test, a.present, b.present) };
@@ -314,7 +324,84 @@ export class Evaluator {
   /** Evaluates a method or lambda body block; returns the returned value (VOID for void). */
   runBody(body: SyntaxNode, scope: Scope): SV {
     const completion = this.statements(statementsOf(body), 0, scope);
-    return completion.kind === 'return' ? completion.value : VOID;
+    // A conditional return at the end of a body: the other paths fall off the end (void methods).
+    return completion.kind === 'normal' ? VOID : completion.value;
+  }
+
+  /**
+   * Two-way control split. Each side runs on its own copy of the environment
+   * and objects; the combined completion returns when a side returns, and
+   * execution continues with the state of the side(s) that did not return.
+   */
+  private split(test: Expr, onThen: (scope: Scope) => Completion, onElse: (scope: Scope) => Completion, scope: Scope): Completion {
+    if (isLit(test, true)) return onThen(scope);
+    if (isLit(test, false)) return onElse(scope);
+    const before = snapshotObjects(this.objects);
+    const thenEnv = scope.env.fork();
+    const left = attempt(scope.block, (block) => onThen({ ...scope, env: thenEnv, block }));
+    const leftObjects = snapshotObjects(this.objects);
+    restoreObjects(before);
+    const elseEnv = scope.env.fork();
+    const right = attempt(scope.block, (block) => onElse({ ...scope, env: elseEnv, block }));
+    const rightObjects = snapshotObjects(this.objects);
+    emitIf(scope.block, test, left.instrs, right.instrs);
+    if (!left.outcome.ok && !right.outcome.ok) throw new Diverged();
+    if (!left.outcome.ok) {
+      restoreObjects(rightObjects);
+      scope.env.replaceWith(elseEnv);
+      return right.outcome.ok ? right.outcome.value : { kind: 'normal' };
+    }
+    if (!right.outcome.ok) {
+      restoreObjects(leftObjects);
+      scope.env.replaceWith(thenEnv);
+      return left.outcome.value;
+    }
+    const a = left.outcome.value;
+    const b = right.outcome.value;
+    const returns = (completion: Completion): Expr => (completion.kind === 'normal' ? FALSE : completion.kind === 'return' ? TRUE : completion.test);
+    const valueOf = (completion: Completion): SV | undefined => (completion.kind === 'normal' ? undefined : completion.value);
+    const rtA = returns(a);
+    const rtB = returns(b);
+    const returnTest = simplifyCond(test, rtA, rtB);
+    const va = valueOf(a);
+    const vb = valueOf(b);
+    const value = va === undefined ? vb : vb === undefined ? va : this.merge(test, va, vb);
+    // The continuation only matters on paths that did not return.
+    if (isLit(rtA, true)) {
+      restoreObjects(rightObjects);
+      scope.env.replaceWith(elseEnv);
+    } else if (isLit(rtB, true)) {
+      restoreObjects(leftObjects);
+      scope.env.replaceWith(thenEnv);
+    } else {
+      this.mergeObjectStates(test, before, leftObjects, rightObjects, scope.block);
+      this.mergeEnv(scope.env, test, thenEnv, elseEnv, scope.block);
+    }
+    if (isLit(returnTest, false)) return { kind: 'normal' };
+    if (isLit(returnTest, true)) return { kind: 'return', value: value! };
+    return { kind: 'partial', test: this.bindLarge(returnTest, scope), value: value! };
+  }
+
+  /** Return conditions are reused by every later statement: LET-bound only when large (small ones stay pure expressions). */
+  private bindLarge(test: Expr, scope: Scope): Expr {
+    return exprSize(test) > 64 ? scope.block.bind(test, 'returned') : test;
+  }
+
+  /** Runs the statements after a conditional return, only on the paths that did not return. */
+  private continueAfter(partial: Extract<Completion, { kind: 'partial' }>, nodes: readonly SyntaxNode[], index: number, scope: Scope): Completion {
+    const rest = nodes.slice(index + 1);
+    if (rest.length === 0) return partial;
+    const restRun = attempt(scope.block, (block) => this.statements(rest, 0, { ...scope, block }));
+    emitIf(scope.block, partial.test, [], restRun.instrs);
+    if (!restRun.outcome.ok) return { kind: 'return', value: partial.value };
+    const next = restRun.outcome.value;
+    if (next.kind === 'normal') return partial;
+    if (next.kind === 'return') return { kind: 'return', value: this.merge(partial.test, partial.value, next.value) };
+    return {
+      kind: 'partial',
+      test: this.bindLarge(or(partial.test, next.test), scope),
+      value: this.merge(partial.test, partial.value, next.value),
+    };
   }
 
   private statements(nodes: readonly SyntaxNode[], start: number, scope: Scope): Completion {
@@ -349,11 +436,16 @@ export class Evaluator {
           this.throwException(thrown, scope.block, node, scope);
           break;
         }
-        case 'if_statement':
-          return this.ifStatement(nodes, index, scope);
+        case 'if_statement': {
+          const completion = this.ifStatement(node, scope);
+          if (completion.kind === 'return') return completion;
+          if (completion.kind === 'partial') return this.continueAfter(completion, nodes, index, scope);
+          break;
+        }
         case 'block': {
           const inner = this.statements(statementsOf(node), 0, { ...scope, env: scope.env.child() });
           if (inner.kind === 'return') return inner;
+          if (inner.kind === 'partial') return this.continueAfter(inner, nodes, index, scope);
           break;
         }
         case 'switch_expression':
@@ -362,10 +454,13 @@ export class Evaluator {
         case 'try_statement': {
           const completion = this.tryStatement(node, scope);
           if (completion.kind === 'return') return completion;
+          if (completion.kind === 'partial') return this.continueAfter(completion, nodes, index, scope);
           break;
         }
         case 'enhanced_for_statement':
           return this.forEach(nodes, index, scope);
+        case 'for_statement':
+          return this.countedFor(nodes, index, scope);
         case 'assert_statement':
         case 'empty_statement':
         case 'line_comment':
@@ -417,18 +512,62 @@ export class Evaluator {
         if (probe.outcome.ok && probe.instrs.length === 0) {
           const matching = scope.block.bind({ k: 'filter', of: iterable.e, as, body: probe.outcome.value }, 'matching');
           const found = op('not', op('isEmpty', matching));
-          const firstEnv = scope.env.child();
-          firstEnv.define(name, retype(iterable.element(op('first', matching)), declared));
-          return this.ifLike(found, (block) => {
-            const value = this.expr(named(inner[0]!)[0]!, { ...scope, env: firstEnv, block });
-            return { kind: 'return', value };
-          }, (block) => this.statements(nodes, index + 1, { ...scope, block }), scope);
+          const completion = this.split(found, (side) => {
+            const firstEnv = side.env.child();
+            firstEnv.define(name, retype(iterable.element(op('first', matching)), declared));
+            return { kind: 'return', value: this.expr(named(inner[0]!)[0]!, { ...side, env: firstEnv }) };
+          }, () => ({ kind: 'normal' }), scope);
+          if (completion.kind === 'partial') return this.continueAfter(completion, nodes, index, scope);
+          return completion.kind === 'return' ? completion : this.statements(nodes, index + 1, scope);
         }
       }
     }
 
+    // A body that only returns (possibly conditionally, e.g. try { return f(x); } catch ...): the first element that returns.
+    const match = this.firstReturning(iterable, (env, item) => env.define(name, retype(item, declared)), bodyStatements, scope);
+    if (match !== undefined) {
+      const matching = scope.block.bind({ k: 'filter', of: iterable.e, as: match.as, body: match.test }, 'matching');
+      const found = op('not', op('isEmpty', matching));
+      const completion = this.split(found, () => ({
+        kind: 'return',
+        value: { ...match.value, e: op('first', { k: 'map', of: matching, as: match.as, body: match.value.e }) },
+      }), () => ({ kind: 'normal' }), scope);
+      if (completion.kind === 'partial') return this.continueAfter(completion, nodes, index, scope);
+      return completion.kind === 'return' ? completion : this.statements(nodes, index + 1, scope);
+    }
+
     this.foldLoop(iterable, (env, item) => env.define(name, retype(item, declared)), (inner) => this.statements(bodyStatements, 0, inner), node, scope);
     return this.statements(nodes, index + 1, scope);
+  }
+
+  /**
+   * A loop body without effects on outer state that returns for some
+   * elements: returns, per element, whether it returns and with which value.
+   */
+  private firstReturning(iterable: ListSV, bind: (env: Env, item: SV) => void, body: readonly SyntaxNode[], scope: Scope): { as: string; test: Expr; value: Extract<SV, { t: 'pure' }> } | undefined {
+    const before = snapshotObjects(this.objects);
+    const outer = new Map(scope.env.localNames().map((key) => [key, scope.env.get(key)!]));
+    const forked = scope.env.fork();
+    const env = forked.child();
+    const as = scope.block.fresh('it');
+    bind(env, iterable.element(vr(as)));
+    const run = attempt(scope.block, (block) => this.statements(body, 0, { ...scope, env, block }));
+    let changedFields = false;
+    for (const [target, fields] of before) {
+      for (const [fieldName, value] of target.fields) if (fields.get(fieldName) !== value) changedFields = true;
+    }
+    restoreObjects(before);
+    if (changedFields || [...outer.keys()].some((key) => forked.get(key) !== outer.get(key))) return undefined;
+    if (!run.outcome.ok || run.outcome.value.kind === 'normal') return undefined;
+    const completion = run.outcome.value;
+    if (completion.value.t !== 'pure') return undefined;
+    try {
+      const [test, value] = foldPureInstrs(run.instrs, [completion.kind === 'return' ? TRUE : completion.test, completion.value.e]);
+      return { as, test: test!, value: { ...completion.value, e: value! } };
+    } catch (error) {
+      if (error instanceof Unsupported) return undefined;
+      throw error;
+    }
   }
 
   /**
@@ -475,6 +614,63 @@ export class Evaluator {
     for (const slot of slots) slot.write(this.reView(kinds.get(slot.slot)!, getf(folded, slot.slot)));
   }
 
+  /**
+   * for (int i = a; i < b; i++) { ... } with `i` never assigned in the body:
+   * a loop over range(a, b), compiled like a for-each.
+   */
+  private countedFor(nodes: readonly SyntaxNode[], index: number, scope: Scope): Completion {
+    const node = nodes[index]!;
+    const init = field(node, 'init');
+    const condition = field(node, 'condition');
+    const update = field(node, 'update');
+    const body = field(node, 'body');
+    const declarator = init?.type === 'local_variable_declaration' ? named(init).find((child) => child.type === 'variable_declarator') : undefined;
+    const name = declarator === undefined ? undefined : field(declarator, 'name')?.text;
+    const startNode = declarator === undefined ? undefined : field(declarator, 'value');
+    if (name === undefined || startNode === undefined || condition?.type !== 'binary_expression' || update === undefined || body === undefined) {
+      this.fail('Only counted for loops (for (int i = a; i < b; i++)) are supported', node, scope);
+    }
+    const operator = field(condition, 'operator')?.type;
+    if (field(condition, 'left')?.text !== name || (operator !== '<' && operator !== '<=')) this.fail('Unsupported for-loop condition', node, scope);
+    const updateText = update.text.replace(/\s+/g, '');
+    const stepMatch = new RegExp(`^${name}\\+=(\\d+)$`).exec(updateText);
+    const step = updateText === `${name}++` || updateText === `++${name}` ? 1 : stepMatch !== null ? Number(stepMatch[1]) : undefined;
+    if (step === undefined || step < 1) this.fail('Unsupported for-loop update', node, scope);
+    if (new RegExp(`\\b${name}\\s*(=[^=]|\\+\\+|--|[+\\-*/]=)`).test(body.text)) this.fail('The loop counter is modified in the body', node, scope);
+    const start = this.expr(startNode, scope);
+    const bound = this.expr(field(condition, 'right')!, scope);
+    if (start.t !== 'pure' || bound.t !== 'pure') this.fail('Non-scalar loop bounds', node, scope);
+    const end = operator === '<=' ? op('add', bound.e, lit(1)) : bound.e;
+    const range: ListSV = { t: 'list', e: step === 1 ? op('range', start.e, end) : op('range', start.e, end, lit(step)), elem: T.int, element: (item) => pure(item, T.int) };
+    const literal = start.e.k === 'lit' && end.k === 'lit' && typeof start.e.v === 'number' && typeof end.v === 'number' && (end.v - start.e.v) / step <= 32;
+    const rangeList: ListSV = literal
+      ? (() => {
+        const first = (start.e as { v: number }).v;
+        const items: Expr[] = [];
+        for (let value = first; value < (end as { v: number }).v; value += step) items.push(lit(value));
+        return { ...range, e: { k: 'list' as const, items } };
+      })()
+      : range;
+    // Reuse the for-each compilation with a synthetic iterable.
+    return this.loopOver(nodes, index, scope, name, T.int, rangeList, body);
+  }
+
+  /** Shared body of for-each and counted loops. */
+  private loopOver(nodes: readonly SyntaxNode[], index: number, scope: Scope, name: string, declared: JType, iterable: ListSV, body: SyntaxNode): Completion {
+    if (/\b(break|continue)\b/.test(body.text)) this.fail('break/continue in loops are not supported', nodes[index], scope);
+    const bodyStatements = body.type === 'block' ? statementsOf(body) : [body];
+    if (iterable.e.k === 'list' && iterable.e.items.length <= 32) {
+      this.unrollQueue.push({ items: iterable.e.items, name, declared, iterable, bodyStatements, rest: nodes.slice(index + 1) });
+      try {
+        return this.unrollStep(0, scope);
+      } finally {
+        this.unrollQueue.pop();
+      }
+    }
+    this.foldLoop(iterable, (env, item) => env.define(name, retype(item, declared)), (inner) => this.statements(bodyStatements, 0, inner), nodes[index]!, scope);
+    return this.statements(nodes, index + 1, scope);
+  }
+
   /** Re-expresses a value of the same shape as `like` over a new expression. */
   private reView(like: SV, e: Expr): SV {
     switch (like.t) {
@@ -502,31 +698,6 @@ export class Evaluator {
     env.define(loop.name, retype(loop.iterable.element(loop.items[position]!), loop.declared));
     const continuation = { type: '__aeris_unroll__', position: position + 1 } as unknown as SyntaxNode;
     return this.statements([...loop.bodyStatements, continuation], 0, { ...scope, env });
-  }
-
-  /** Two-way control split where each side returns a completion (used by loop rewrites). */
-  private ifLike(test: Expr, onThen: (block: Block) => Completion, onElse: (block: Block) => Completion, scope: Scope): Completion {
-    const before = snapshotObjects(this.objects);
-    const left = attempt(scope.block, onThen);
-    const leftObjects = snapshotObjects(this.objects);
-    restoreObjects(before);
-    const right = attempt(scope.block, onElse);
-    const rightObjects = snapshotObjects(this.objects);
-    emitIf(scope.block, test, left.instrs, right.instrs);
-    const value = (outcome: typeof left.outcome): SV | undefined => (!outcome.ok ? undefined : outcome.value.kind === 'return' ? outcome.value.value : VOID);
-    const a = value(left.outcome);
-    const b = value(right.outcome);
-    if (a === undefined && b === undefined) throw new Diverged();
-    if (a === undefined) {
-      restoreObjects(rightObjects);
-      return right.outcome.ok ? right.outcome.value : { kind: 'normal' };
-    }
-    if (b === undefined) {
-      restoreObjects(leftObjects);
-      return left.outcome.ok ? left.outcome.value : { kind: 'normal' };
-    }
-    this.mergeObjectStates(test, before, leftObjects, rightObjects);
-    return { kind: 'return', value: this.merge(test, a, b) };
   }
 
   /**
@@ -558,22 +729,56 @@ export class Evaluator {
       return { completion: probe.outcome.value, env };
     };
     const tried = run(tryBlock);
-    const caught = run(field(clause, 'body') ?? named(clause).at(-1)!);
-    const combine = (a: SV, b: SV): SV => {
-      if (a === b) return a;
-      if (a.t === 'pure' && b.t === 'pure') return pure({ k: 'try', body: a.e, catches, fallback: b.e }, a.jt);
-      this.fail('try/catch produces a non-scalar value', node, scope);
+    const catchBody = field(clause, 'body') ?? named(clause).at(-1)!;
+    // Common case: a pure catch completing like the try block -> one `try` expression, no branching.
+    const caughtProbe = attempt(scope.block, (block) => {
+      const env = scope.env.fork();
+      const completion = this.statements(catchBody.type === 'block' ? statementsOf(catchBody) : [catchBody], 0, { ...scope, env: env.child(), block });
+      return { completion, env };
+    });
+    if (caughtProbe.outcome.ok && caughtProbe.instrs.length === 0 && caughtProbe.outcome.value.completion.kind === tried.completion.kind) {
+      const caught = caughtProbe.outcome.value;
+      const combine = (a: SV, b: SV): SV => {
+        if (a === b) return a;
+        if (a.t === 'pure' && b.t === 'pure') return pure({ k: 'try', body: a.e, catches, fallback: b.e }, a.jt);
+        this.fail('try/catch produces a non-scalar value', node, scope);
+      };
+      for (const name of scope.env.localNames()) {
+        const a = tried.env.get(name);
+        const b = caught.env.get(name);
+        if (a !== undefined && b !== undefined && a !== b) scope.env.assign(name, combine(a, b));
+      }
+      if (tried.completion.kind === 'return' && caught.completion.kind === 'return') {
+        return { kind: 'return', value: combine(tried.completion.value, caught.completion.value) };
+      }
+      return { kind: 'normal' };
+    }
+    // Otherwise the try block's outcome is captured by a sentinel and the control flow splits.
+    const SENTINEL: Expr = lit({ $aeris: 'caught' });
+    const guarded = (value: SV): PureSV => {
+      if (value.t !== 'pure') this.fail('try/catch produces a non-scalar value', node, scope);
+      return pure({ k: 'try', body: value.e, catches, fallback: SENTINEL }, value.jt);
     };
-    for (const name of scope.env.localNames()) {
-      const a = tried.env.get(name);
-      const b = caught.env.get(name);
-      if (a !== undefined && b !== undefined && a !== b) scope.env.assign(name, combine(a, b));
+    const changed = scope.env.localNames().filter((name) => tried.env.get(name) !== undefined && tried.env.get(name) !== scope.env.get(name));
+    const probeValues = [
+      ...changed.map((name) => guarded(tried.env.get(name)!)),
+      ...(tried.completion.kind === 'return' ? [guarded(tried.completion.value)] : []),
+    ];
+    if (probeValues.length === 0) {
+      // Nothing observable in the try block: only whether it throws matters, which a pure block cannot.
+      return { kind: 'normal' };
     }
-    if (tried.completion.kind === 'return' && caught.completion.kind === 'return') {
-      return { kind: 'return', value: combine(tried.completion.value, caught.completion.value) };
-    }
-    if (tried.completion.kind !== caught.completion.kind) this.fail('try and catch complete differently', node, scope);
-    return { kind: 'normal' };
+    // With several assignments, Java keeps those made before the exception: not modeled.
+    if (probeValues.length > 1) this.fail('try block with several observable results', node, scope);
+    const bound = probeValues.map((value) => pure(scope.block.bind(value.e, 'tried'), value.jt));
+    const caughtTest = op('eq', bound[0]!.e, SENTINEL);
+    return this.split(caughtTest, (side) =>
+      // Exception caught: the catch block decides.
+      this.statements(catchBody.type === 'block' ? statementsOf(catchBody) : [catchBody], 0, { ...side, env: side.env.child() }),
+    (side) => {
+      changed.forEach((name, position) => side.env.assign(name, bound[position]!));
+      return tried.completion.kind === 'return' ? { kind: 'return', value: bound.at(-1)! } : { kind: 'normal' };
+    }, scope);
   }
 
   throwException(thrown: SV, block: Block, node: SyntaxNode, scope: Scope): never {
@@ -582,93 +787,16 @@ export class Evaluator {
     throw new Diverged();
   }
 
-  /**
-   * if/else with continuation: when a branch completes normally and the other
-   * returns or throws, the rest of the method runs inside the normal branch.
-   */
-  private ifStatement(nodes: readonly SyntaxNode[], index: number, scope: Scope): Completion {
-    const node = nodes[index]!;
+  /** if/else: both branches split the control flow; the caller continues after it. */
+  private ifStatement(node: SyntaxNode, scope: Scope): Completion {
     const test = asBool(this.expr(field(node, 'condition')!, scope), 'if condition');
     const consequence = field(node, 'consequence')!;
     const alternative = field(node, 'alternative');
-    const rest = () => nodes.slice(index + 1);
     const runSide = (stmt: SyntaxNode | undefined, sideScope: Scope): Completion => {
       if (stmt === undefined) return { kind: 'normal' };
       return this.statements(stmt.type === 'block' ? statementsOf(stmt) : [stmt], 0, { ...sideScope, env: sideScope.env.child() });
     };
-
-    if (isLit(test, true) || isLit(test, false)) {
-      const chosen = isLit(test, true) ? consequence : alternative;
-      const completion = runSide(chosen, scope);
-      return completion.kind === 'return' ? completion : this.statements(nodes, index + 1, scope);
-    }
-
-    const before = snapshotObjects(this.objects);
-    const thenEnv = scope.env.fork();
-    const thenSide = attempt(scope.block, (block) => runSide(consequence, { ...scope, env: thenEnv, block }));
-    const thenObjects = snapshotObjects(this.objects);
-    restoreObjects(before);
-    const elseEnv = scope.env.fork();
-    const elseSide = attempt(scope.block, (block) => runSide(alternative, { ...scope, env: elseEnv, block }));
-    const elseObjects = snapshotObjects(this.objects);
-
-    const thenNormal = thenSide.outcome.ok && thenSide.outcome.value.kind === 'normal';
-    const elseNormal = elseSide.outcome.ok && elseSide.outcome.value.kind === 'normal';
-
-    if (thenNormal && elseNormal) {
-      emitIf(scope.block, test, thenSide.instrs, elseSide.instrs);
-      this.mergeObjectStates(test, before, thenObjects, elseObjects, scope.block);
-      this.mergeEnv(scope.env, test, thenEnv, elseEnv, scope.block);
-      return this.statements(nodes, index + 1, scope);
-    }
-    if (!thenSide.outcome.ok && elseNormal) {
-      restoreObjects(elseObjects);
-      scope.env.replaceWith(elseEnv);
-      emitIf(scope.block, test, thenSide.instrs, elseSide.instrs);
-      return this.statements(nodes, index + 1, scope);
-    }
-    if (thenNormal && !elseSide.outcome.ok) {
-      restoreObjects(thenObjects);
-      scope.env.replaceWith(thenEnv);
-      emitIf(scope.block, test, thenSide.instrs, elseSide.instrs);
-      return this.statements(nodes, index + 1, scope);
-    }
-
-    // At least one side ends the method: continue the other side to its own end.
-    const finish = (side: typeof thenSide, env: Env, objects: Map<ObjSV, Map<string, SV>>) => {
-      if (!side.outcome.ok) return { completion: undefined as Completion | undefined, instrs: side.instrs, objects };
-      if (side.outcome.value.kind === 'return') return { completion: side.outcome.value, instrs: side.instrs, objects };
-      restoreObjects(objects);
-      const sub = scope.block.child();
-      for (const instr of side.instrs) sub.emit(instr);
-      const continued = (() => {
-        try {
-          return this.statements(rest(), 0, { ...scope, env, block: sub });
-        } catch (error) {
-          if (error instanceof Diverged) return undefined;
-          throw error;
-        }
-      })();
-      return { completion: continued ?? undefined, instrs: sub.instrs, objects: snapshotObjects(this.objects) };
-    };
-    const left = finish(thenSide, thenEnv, thenObjects);
-    const right = finish(elseSide, elseEnv, elseObjects);
-    emitIf(scope.block, test, left.instrs, right.instrs);
-    const value = (completion: Completion | undefined): SV | undefined =>
-      completion === undefined ? undefined : completion.kind === 'return' ? completion.value : VOID;
-    const a = value(left.completion);
-    const b = value(right.completion);
-    if (a === undefined && b === undefined) throw new Diverged();
-    if (a === undefined) {
-      restoreObjects(right.objects);
-      return { kind: 'return', value: b! };
-    }
-    if (b === undefined) {
-      restoreObjects(left.objects);
-      return { kind: 'return', value: a };
-    }
-    this.mergeObjectStates(test, before, left.objects, right.objects);
-    return { kind: 'return', value: this.merge(test, a, b) };
+    return this.split(test, (side) => runSide(consequence, side), (side) => runSide(alternative, side), scope);
   }
 
   private mergeEnv(env: Env, test: Expr, left: Env, right: Env, block?: Block): void {
@@ -758,6 +886,13 @@ export class Evaluator {
           if (item !== undefined) return item;
         }
         this.fail('Array access is not supported', node, scope);
+      }
+      case 'array_creation_expression': {
+        const initializer = named(node).find((child) => child.type === 'array_initializer');
+        if (initializer === undefined) this.fail('Arrays without initializer are not supported', node, scope);
+        const elementType = this.project.parseType(field(node, 'type')!, scope.owner);
+        const items = named(initializer).map((item) => this.expr(item, scope));
+        return { t: 'list', e: { k: 'list', items: items.map((item) => this.encode(item)) }, elem: elementType, element: (item) => this.view(item, elementType) };
       }
       case 'switch_expression':
         return this.switchExpression(node, scope);
@@ -1003,6 +1138,18 @@ export class Evaluator {
       this.fail(`Unknown static member ${target.fqn}.${name}`, node, scope);
     }
     if (target.t === 'obj') return this.readField(target, name);
+    if (target.t === 'pure') {
+      const decl = this.project.type(target.jt.name);
+      if (decl?.kind === 'enum') {
+        // A field of an enum value: select the constant's field by name.
+        let result: SV | undefined;
+        for (const constant of [...decl.enumConstants].reverse()) {
+          const value = this.readField(this.enumConstant(decl, constant, node, scope), name);
+          result = result === undefined ? value : this.merge(op('eq', target.e, lit(constant)), value, result);
+        }
+        if (result !== undefined) return result;
+      }
+    }
     this.fail(`Field access on ${describe(target)}`, node, scope);
   }
 
@@ -1105,6 +1252,12 @@ export class Evaluator {
     const isNullLit = (sv: SV) => sv.t === 'pure' && isLit(sv.e, null);
     if (isNullLit(right)) return nullCheck(left, this);
     if (isNullLit(left)) return nullCheck(right, this);
+    // Enum constants are singletons: == compares names.
+    const enumName = (sv: SV): Expr | undefined => (sv.t === 'obj' && sv.fields.has('$name') ? (sv.fields.get('$name') as { e: Expr }).e
+      : sv.t === 'pure' && this.project.type(sv.jt.name)?.kind === 'enum' ? sv.e : undefined);
+    const leftEnum = enumName(left);
+    const rightEnum = enumName(right);
+    if (leftEnum !== undefined && rightEnum !== undefined) return op('eq', leftEnum, rightEnum);
     if (left.t === 'pure' && right.t === 'pure') {
       const comparable = (jt: JType) => isNumericOrBoolean(jt) || this.project.type(jt.name)?.kind === 'enum' || jt.name === 'java.lang.Object';
       if (comparable(left.jt) && comparable(right.jt)) return op('eq', left.e, right.e);
@@ -1692,6 +1845,9 @@ export class Evaluator {
   // -------------------------------------------------------------------------
 
   private staticCall(fqn: string, name: string, args: SV[], node: SyntaxNode, scope: Scope): SV {
+    // X.class.getName() / getSimpleName(): a class literal used as a value.
+    if (args.length === 0 && name === 'getName') return pure(lit(binaryName(this.project, fqn)), T.string);
+    if (args.length === 0 && name === 'getSimpleName') return pure(lit(fqn.slice(fqn.lastIndexOf('.') + 1)), T.string);
     const source = this.contextSource(fqn, name);
     if (source !== undefined) return source;
     if (this.config.externalEffects.some((prefix) => fqn.startsWith(prefix))) {
@@ -2213,6 +2369,13 @@ function knownType(name: string): string | undefined {
 }
 
 /** True when an AfterConvertCallback only sets transient fields (safe for list elements). */
+/** Class.getName(): nested types use '$'. */
+function binaryName(project: JavaProject, fqn: string): string {
+  const decl = project.type(fqn);
+  if (decl?.outer === undefined) return fqn;
+  return `${binaryName(project, decl.outer.fqn)}$${decl.simple}`;
+}
+
 function isTransientOnlyCallback(callback: MethodDecl, entity: EntityModel): boolean {
   const text = callback.body?.text ?? '';
   const setters = [...text.matchAll(/\.set([A-Z]\w*)\(/g)].map((match) => match[1]!.charAt(0).toLowerCase() + match[1]!.slice(1));

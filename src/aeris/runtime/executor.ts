@@ -576,6 +576,22 @@ class Frame {
       case 'size':
         if (!Array.isArray(a)) throw new AerisHttpError(500, 'NULL_DEREFERENCE', 'size() of a non-list value.');
         return a.length;
+      case 'range': {
+        // for (int i = a; i < b; i++): bounded, a runaway loop is a program error, not a hang.
+        const start = num(a);
+        const end = num(b);
+        const step = values[2] === undefined ? 1 : num(values[2]);
+        if (!(step >= 1) || (end - start) / step > 100_000) throw new AerisExecutionError('Loop range exceeds the execution budget.');
+        const out: number[] = [];
+        for (let value = start; value < end; value += step) out.push(value);
+        return out;
+      }
+      case 'replaceAll':
+      case 'matches': {
+        const pattern = javaRegex(str(b));
+        if (expr.op === 'matches') return new RegExp(`^(?:${pattern})$`, 'u').test(str(a));
+        return str(a).replace(new RegExp(pattern, 'gu'), str(values[2] ?? null));
+      }
       case 'append': {
         if (!Array.isArray(a)) throw new AerisHttpError(500, 'NULL_DEREFERENCE', 'add() on a non-list value.');
         return [...a, b];
@@ -642,6 +658,12 @@ function str(value: JsonValue): string {
   if (value === null) throw new AerisHttpError(500, 'NULL_DEREFERENCE', 'String operation on null.');
   if (typeof value !== 'string') throw new AerisExecutionError(`String operation on ${JSON.stringify(value)}.`);
   return value;
+}
+
+/** Java and JavaScript agree on this regex subset (checked again at compile time). */
+function javaRegex(pattern: string): string {
+  if (/\(\?[<>=!]|\(\?[a-z]|[*+?}]\+|\\[pPQEAzZGRhHXk]/.test(pattern)) throw new AerisExecutionError(`Unsupported Java regex ${pattern}`);
+  return pattern;
 }
 
 function javaTrim(text: string): string {

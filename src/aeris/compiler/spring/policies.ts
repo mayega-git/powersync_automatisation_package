@@ -1,7 +1,7 @@
-import type { Expr } from '../../ir/types.js';
+import type { Expr, Instr } from '../../ir/types.js';
 import { stringValue } from '../java/parser.js';
 import type { TypeDecl } from '../java/model.js';
-import { attempt } from './branching.js';
+import { attempt, foldPureInstrs } from './branching.js';
 import type { Evaluator, Scope } from './evaluator.js';
 import { and, Block, Env, FALSE, lit, not, obj, op, or, pure, T, TRUE, Unsupported, type SV } from './sv.js';
 import { fieldTypeOf } from './persistence.js';
@@ -107,8 +107,8 @@ export function compilePolicy(expression: string, ev: Evaluator): Expr | undefin
         const block = new Block({ vars: 0, uuidSlots: 0 });
         const scope: Scope = { env: new Env(), self: { t: 'bean', cls: bean }, owner: bean, block };
         const probe = attempt(block, (child) => ev.inline(candidates[0]!, { t: 'bean', cls: bean }, args, bean.node, { ...scope, block: child }));
-        if (!probe.outcome.ok || probe.instrs.length > 0) throw new Unsupported(`@${token.text}.${method} has effects`);
-        return probe.outcome.value;
+        if (!probe.outcome.ok) throw new Unsupported(`@${token.text}.${method} cannot be evaluated`);
+        return inlineLets(probe.instrs, probe.outcome.value);
       }
       if (token.kind !== 'name') throw new Unsupported(`Unexpected ${token.text}`);
       switch (token.text) {
@@ -164,6 +164,13 @@ export function compilePolicy(expression: string, ev: Evaluator): Expr | undefin
     if (error instanceof Unsupported) return undefined;
     throw error;
   }
+}
+
+/** A policy check is a single expression: folds the pure instructions of the bean call into its result. */
+function inlineLets(instrs: readonly Instr[], value: SV): SV {
+  if (instrs.length === 0) return value;
+  if (value.t !== 'pure') throw new Unsupported('Authorization operand is not boolean');
+  return { ...value, e: foldPureInstrs(instrs, [value.e])[0]! };
 }
 
 function findBean(ev: Evaluator, name: string): TypeDecl | undefined {

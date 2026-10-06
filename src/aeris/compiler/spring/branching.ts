@@ -146,3 +146,41 @@ export function restoreObjects(snapshot: Map<ObjSV, Map<string, SV>>): void {
 export const LIT_TRUE = TRUE;
 export const LIT_FALSE = FALSE;
 export { pure };
+
+/**
+ * Folds instructions that only bind values (LETs, and IFs choosing between
+ * LET values) into the given expressions, so they can be used where a single
+ * expression is required (policy checks, filter predicates).
+ */
+export function foldPureInstrs(instrs: readonly Instr[], exprs: readonly Expr[]): Expr[] {
+  const substitute = (node: unknown, bound: ReadonlyMap<string, Expr>): unknown => {
+    if (Array.isArray(node)) return node.map((child) => substitute(child, bound));
+    if (node === null || typeof node !== 'object') return node;
+    const record = node as Record<string, unknown>;
+    if (record.k === 'var' && typeof record.name === 'string' && bound.has(record.name)) return bound.get(record.name);
+    if (record.k === 'lit') return node;
+    return Object.fromEntries(Object.entries(record).map(([key, child]) => [key, substitute(child, bound)]));
+  };
+  const run = (list: readonly Instr[], outer: ReadonlyMap<string, Expr>): Map<string, Expr> => {
+    const bound = new Map(outer);
+    for (const instr of list) {
+      if (instr.op === 'LET') {
+        bound.set(instr.out, substitute(instr.expr, bound) as Expr);
+      } else if (instr.op === 'IF') {
+        const test = substitute(instr.test, bound) as Expr;
+        const left = run(instr.then, bound);
+        const right = run(instr.else ?? [], bound);
+        for (const name of new Set([...left.keys(), ...right.keys()])) {
+          const a = left.get(name) ?? NULL;
+          const b = right.get(name) ?? NULL;
+          bound.set(name, a === b ? a : cond(test, a, b));
+        }
+      } else {
+        throw new Unsupported(`The code has effects (${instr.op})`);
+      }
+    }
+    return bound;
+  };
+  const bound = run(instrs, new Map());
+  return exprs.map((expr) => substitute(expr, bound) as Expr);
+}

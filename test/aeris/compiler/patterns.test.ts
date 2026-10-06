@@ -219,4 +219,51 @@ describe('compiler on hexagonal code', () => {
     expect(cached.offlineClass).toBe('UNSUPPORTED');
     expect(cached.reasons[0]).toMatch(/holds state/);
   });
+
+  it('compiles conditional returns: try/return guarded by if, then the first loop element that returns', async () => {
+    const artifact = await compileJava({ ...SOURCES, 'demo/orders/KindController.java': `
+package demo.orders;
+import demo.kernel.RequestContextHolder;
+import java.util.List;
+import java.util.UUID;
+import org.springframework.web.bind.annotation.*;
+import reactor.core.publisher.Mono;
+@RestController
+@RequestMapping("/api/orders")
+public class KindController {
+  private final LinePort lines;
+  public KindController(LinePort lines) { this.lines = lines; }
+  @GetMapping("/{orderId}/kind") public Mono<String> kind(@PathVariable UUID orderId, @RequestParam(required = false) String preferred) {
+    return RequestContextHolder.getRequiredContext().flatMap(ctx -> lines.forOrder(ctx.tenantId(), orderId)
+        .map(Line::label).collectList().map(labels -> resolve(preferred, labels)));
+  }
+  private static String resolve(String preferred, List<String> labels) {
+    if (preferred != null && !preferred.isBlank()) {
+      try {
+        return LineKind.valueOf(preferred.trim().toUpperCase()).code();
+      } catch (IllegalArgumentException ignored) {
+        // fall through to the labels
+      }
+    }
+    for (String label : labels) {
+      try {
+        return LineKind.valueOf(label.toUpperCase()).code();
+      } catch (RuntimeException ignored) {
+        // try the next label
+      }
+    }
+    return "none";
+  }
+}
+` });
+    const plan = endpoint(artifact, 'GET /api/orders/{orderId}/kind');
+    expect(plan.offlineClass, plan.reasons.join('; ')).toBe('LOCAL_READ_SAFE');
+    const rows = { 'demo.orders.LineEntity': [line(1, 'bolt', 1, 'GOODS'), line(2, 'service', 1, 'GOODS'), line(3, 'goods', 1, 'GOODS')] };
+    const ask = (preferred?: string) => run(artifact, 'GET /api/orders/{orderId}/kind', rows, { params: { orderId: ORDER }, query: preferred === undefined ? {} : { preferred }, context: { tenantId: TENANT } });
+    expect((await ask()).body).toBe('S');
+    expect((await ask(' goods ')).body).toBe('G');
+    expect((await ask('legacy')).body).toBe('S');
+    const none = await run(artifact, 'GET /api/orders/{orderId}/kind', { 'demo.orders.LineEntity': [line(1, 'bolt', 1, 'GOODS')] }, { params: { orderId: ORDER }, context: { tenantId: TENANT } });
+    expect(none.body).toBe('none');
+  });
 });

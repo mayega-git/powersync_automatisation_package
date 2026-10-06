@@ -282,7 +282,14 @@ export function libraryStatic(ev: Evaluator, fqn: string, name: string, args: SV
     case 'LoggerFactory':
       if (name === 'getLogger') return { t: 'logger' };
       break;
+    case 'IntStream':
+      if ((name === 'range' || name === 'rangeClosed') && args.length === 2) {
+        const end = name === 'rangeClosed' ? op('add', arg(1), lit(1)) : arg(1);
+        return { t: 'list', e: op('range', arg(0), end), elem: T.int, element: (item) => pure(item, T.int) };
+      }
+      break;
     case 'Collectors':
+      if (name === 'toSet' && args.length === 0) return { t: 'type', fqn: 'aeris.collector.toSet' };
       if (name === 'toList' && args.length === 0) return { t: 'type', fqn: 'aeris.collector.toList' };
       break;
   }
@@ -503,6 +510,15 @@ function valueMethod(ev: Evaluator, receiver: SV & { t: 'pure' }, name: string, 
         case 'endsWith/1': return pure(op('endsWith', self, arg(0)), T.boolean);
         case 'contains/1': return pure(op('contains', self, arg(0)), T.boolean);
         case 'concat/1': return pure(op('concat', self, arg(0)), T.string);
+        case 'replaceAll/2':
+        case 'matches/1': {
+          const regex = arg(0);
+          if (regex.k !== 'lit' || typeof regex.v !== 'string' || !portableRegex(regex.v)) break;
+          if (name === 'matches') return pure(op('matches', self, regex), T.boolean);
+          const replacement = arg(1);
+          if (replacement.k !== 'lit' || typeof replacement.v !== 'string' || replacement.v.includes('\\')) break;
+          return pure(op('replaceAll', self, regex, replacement), T.string);
+        }
         case 'replace/2': {
           const target = args[0];
           if (target?.t === 'pure' && target.jt.name === 'char') break;
@@ -629,6 +645,12 @@ function listMethod(ev: Evaluator, receiver: ListSV, name: string, args: SV[], n
       return { ...receiver, e: op('take', receiver.e, scalar(args[0], 'limit()', node)) };
     case 'collect/1':
       if (args[0]?.t === 'type' && args[0].fqn === 'aeris.collector.toList') return receiver;
+      if (args[0]?.t === 'type' && args[0].fqn === 'aeris.collector.toSet') {
+        // HashSet: duplicates removed; iteration order is unspecified in Java too.
+        const acc = scope.block.fresh('acc');
+        const as = scope.block.fresh('it');
+        return { ...receiver, e: { k: 'fold', of: receiver.e, as, acc, init: lit([]), body: cond(op('contains', vr(acc), vr(as)), vr(acc), op('append', vr(acc), vr(as))) } };
+      }
       break;
     case 'map/1': {
       const as = scope.block.fresh('it');
@@ -652,6 +674,17 @@ function listMethod(ev: Evaluator, receiver: ListSV, name: string, args: SV[], n
     }
   }
   throw new Unsupported(`List.${name}/${args.length} is not modeled`, node);
+}
+
+/** Regex constructs whose meaning differs between java.util.regex and JavaScript are refused. */
+function portableRegex(pattern: string): boolean {
+  if (/\(\?[<>=!]|\(\?[a-z]|[*+?}]\+|\\[pPQEAzZGRhHXkbB]/.test(pattern)) return false;
+  try {
+    new RegExp(pattern, 'u');
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** Builds a stable sort over a list from a Comparator value. */
