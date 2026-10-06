@@ -126,7 +126,7 @@ export type Expr =
   /** Field access on a record or object value. Access on null aborts with 500, like a Java NullPointerException. */
   | { k: 'get'; of: Expr; field: string }
   /** The operation timestamp, captured once per operation and journaled with it. */
-  | { k: 'now'; type: 'datetime' | 'datetime-local' | 'date' }
+  | { k: 'now'; type: 'datetime' | 'datetime-local' | 'date' | 'epoch-millis' }
   /** The n-th client-generated identifier of the operation, journaled with it. */
   | { k: 'uuid'; slot: number }
   | { k: 'cond'; test: Expr; then: Expr; else: Expr }
@@ -186,6 +186,12 @@ export interface ErrorSpec {
   body?: Expr;
   /** Java exception class the backend throws here (documentation and compile-time error routing). */
   exception?: string;
+  /**
+   * The backend's response to this failure cannot be reproduced (two unordered
+   * exception handlers): if it reaches the handler, local execution is abandoned
+   * and the request goes to the server. A TRY still recovers from it.
+   */
+  unreproducible?: boolean;
 }
 
 export type Instr =

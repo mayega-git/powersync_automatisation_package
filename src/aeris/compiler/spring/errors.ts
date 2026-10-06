@@ -108,7 +108,7 @@ export class ExceptionHandlers {
   }
 
   /** Candidate handler for an exception thrown from `controller`, or undefined. */
-  find(controller: TypeDecl, cls: string): { handler: Handler; owner: TypeDecl } | undefined {
+  find(controller: TypeDecl, cls: string): { handler: Handler; owner: TypeDecl; alternatives?: { handler: Handler; owner: TypeDecl }[] } | undefined {
     const chain = this.chain(cls);
     const closest = (handlers: Handler[]) => {
       let best: { handler: Handler; distance: number } | undefined;
@@ -123,7 +123,7 @@ export class ExceptionHandlers {
     const local = closest(this.handlersOf(controller));
     if (local !== undefined) return { handler: local, owner: controller };
     const applicable = this.advices.filter((advice) => this.applies(advice, controller)).sort((a, b) => a.order - b.order);
-    let found: { handler: Handler; owner: TypeDecl; order: number } | undefined;
+    let found: { handler: Handler; owner: TypeDecl; order: number; alternatives?: { handler: Handler; owner: TypeDecl }[] } | undefined;
     for (const advice of applicable) {
       const handler = closest(advice.handlers);
       if (handler === undefined) continue;
@@ -135,7 +135,8 @@ export class ExceptionHandlers {
         if (a === undefined || a !== b) {
           throw new Unsupported(`Exception ${cls.slice(cls.lastIndexOf('.') + 1)} is handled by two unordered advices (${found.owner.simple}, ${advice.decl.simple})`);
         }
-        found = { ...found, ambiguousBody: true } as typeof found;
+        // Same status: the response is reproducible only if every candidate builds the same body (checked by the mapper).
+        found = { ...found, alternatives: [...(found.alternatives ?? []), { handler, owner: advice.decl }] };
       }
     }
     return found;
@@ -170,7 +171,14 @@ export class ControllerErrorMapper implements ErrorMapper {
     const key = `${exception.cls}#${exception.status ?? ''}`;
     let template = this.cache.get(key);
     if (template === undefined) {
-      template = this.resolve(exception);
+      try {
+        template = this.resolve(exception);
+      } catch (error) {
+        // Two unordered advices handle it: Spring's choice depends on bean registration order.
+        if (!(error instanceof Unsupported) || !/unordered advices/.test(error.reason)) throw error;
+        const simple = exception.cls.slice(exception.cls.lastIndexOf('.') + 1);
+        template = { status: 500, code: simple.replace(/Exception$/, '').replace(/([a-z0-9])([A-Z])/g, '$1_$2').toUpperCase() || 'ERROR', message: NULL, unreproducible: true };
+      }
       this.cache.set(key, template);
     }
     return { ...template, message: exception.message, exception: exception.cls };
@@ -182,7 +190,14 @@ export class ControllerErrorMapper implements ErrorMapper {
     const fallbackStatus = exception.status ?? this.annotatedStatus(exception.cls) ?? (exception.cls === VALIDATION_EXCEPTION ? 400 : 500);
     const code = simple.replace(/Exception$/, '').replace(/([a-z0-9])([A-Z])/g, '$1_$2').toUpperCase() || 'ERROR';
     if (found === undefined) return { status: fallbackStatus, code, message: NULL };
-    const evaluated = (found as { ambiguousBody?: boolean }).ambiguousBody === true ? undefined : this.evaluateHandler(found.handler.method, found.owner, exception);
+    const evaluated = this.evaluateHandler(found.handler.method, found.owner, exception);
+    if (found.alternatives !== undefined) {
+      const same = evaluated !== undefined && found.alternatives.every((alternative) => {
+        const other = this.evaluateHandler(alternative.handler.method, alternative.owner, exception);
+        return other !== undefined && JSON.stringify(other) === JSON.stringify(evaluated);
+      });
+      if (!same) throw new Unsupported(`Exception ${simple} is handled by two unordered advices (${found.owner.simple}, ${found.alternatives[0]!.owner.simple}) with different responses`);
+    }
     if (evaluated !== undefined) return { status: evaluated.status, code: evaluated.code ?? code, message: NULL, ...(evaluated.body === undefined ? {} : { body: evaluated.body }) };
     const status = staticStatus(found.handler.method) ?? fallbackStatus;
     return { status, code: literalCode(found.handler.method) ?? code, message: NULL };

@@ -105,6 +105,10 @@ function runtimeErrors(evaluator: Evaluator): { runtimeErrors?: Record<string, E
       // The ResponseStatusException family carries its status; AccessDeniedException's is applied by Spring Security.
       const exception = { t: 'exception' as const, cls, message: NULL, ...(status === undefined || failure === 'ACCESS_DENIED' ? {} : { status }) };
       spec = evaluator.errors.map(exception);
+      if (spec.unreproducible === true) {
+        opaque.push(failure);
+        continue;
+      }
       if (failure === 'ACCESS_DENIED' && spec.status === 500 && spec.body === undefined) spec = { ...spec, status: 403 };
     } catch (error) {
       if (!(error instanceof Unsupported)) throw error;

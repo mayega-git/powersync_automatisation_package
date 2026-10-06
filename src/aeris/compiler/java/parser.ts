@@ -18,7 +18,8 @@ export async function javaParser(): Promise<Parser> {
 
 export function named(node: SyntaxNode | null | undefined): SyntaxNode[] {
   if (node == null) return [];
-  return node.namedChildren.filter((child): child is SyntaxNode => child !== null);
+  // Comments are named nodes in tree-sitter-java; they never carry semantics.
+  return node.namedChildren.filter((child): child is SyntaxNode => child !== null && child.type !== 'line_comment' && child.type !== 'block_comment');
 }
 
 export function field(node: SyntaxNode | null | undefined, name: string): SyntaxNode | undefined {

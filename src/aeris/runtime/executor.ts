@@ -129,6 +129,9 @@ export class Executor {
    */
   translate(plan: EndpointPlan, request: ExecutionRequest, error: unknown): unknown {
     if (!(error instanceof AerisHttpError) || error.origin === 'program') return error;
+    if (error.origin === 'unreproducible') {
+      return new AerisUnreproducibleError(error.code, `${plan.id}: the backend's response to ${error.code} depends on unordered exception handlers.`);
+    }
     const failure = error.origin ?? error.code;
     if (plan.opaqueFailures?.includes(failure)) {
       return new AerisUnreproducibleError(failure, `${plan.id}: the backend's response to ${failure} cannot be reproduced locally.`);
@@ -284,7 +287,7 @@ class Frame {
           const message = this.eval(instr.error.message);
           const text = typeof message === 'string' ? message : JSON.stringify(message);
           const body = instr.error.body === undefined ? undefined : this.eval(instr.error.body, new Map([['$message', text]]));
-          throw new AerisHttpError(instr.error.status, instr.error.code, text, body, 'program');
+          throw new AerisHttpError(instr.error.status, instr.error.code, text, body, instr.error.unreproducible === true ? 'unreproducible' : 'program');
         }
         return undefined;
       case 'IF':
@@ -452,6 +455,8 @@ class Frame {
         return (target as Record<string, JsonValue>)[expr.field] ?? null;
       }
       case 'now':
+        // System.currentTimeMillis(): the captured instant itself.
+        if (expr.type === 'epoch-millis') return this.captured.now;
         return formatNow(this.captured.now, expr.type, this.options.serverTimeZone);
       case 'uuid': {
         const value = this.captured.uuids[expr.slot];

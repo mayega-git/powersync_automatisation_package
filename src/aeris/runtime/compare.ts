@@ -30,6 +30,7 @@ export function compareResults(
       ordered,
       generated: options.generated ?? new Set(),
       fuzzyTime: usesClock(plan.program ?? []),
+      fuzzyMillis: JSON.stringify(plan.program ?? []).includes('"epoch-millis"'),
     });
   }
   return { equal: differences.length === 0, differences };
@@ -39,7 +40,11 @@ interface Options {
   ordered: boolean;
   generated: ReadonlySet<string>;
   fuzzyTime: boolean;
+  /** The program captures System.currentTimeMillis(): epoch milliseconds compare by shape. */
+  fuzzyMillis?: boolean;
 }
+
+const EPOCH_MILLIS = /\d{12,14}/g;
 
 function compareValue(local: JsonValue | null | undefined, server: JsonValue | null | undefined, path: string, out: string[], options: Options): void {
   if (out.length > 50) return;
@@ -49,6 +54,7 @@ function compareValue(local: JsonValue | null | undefined, server: JsonValue | n
     if (a === b) return;
     if (isUuid(a) && isUuid(b) && (a.toLowerCase() === b.toLowerCase() || options.generated.has(a.toLowerCase()))) return;
     if (options.fuzzyTime && TEMPORAL.test(a) && TEMPORAL.test(b)) return;
+    if (options.fuzzyMillis && a.replace(EPOCH_MILLIS, '#') === b.replace(EPOCH_MILLIS, '#')) return;
     out.push(`${path}: local ${JSON.stringify(a)}, server ${JSON.stringify(b)}`);
     return;
   }
@@ -81,6 +87,7 @@ function compareValue(local: JsonValue | null | undefined, server: JsonValue | n
     return;
   }
   if (typeof a === 'number' && typeof b === 'number' && Math.abs(a - b) <= Number.EPSILON * Math.max(1, Math.abs(a), Math.abs(b))) return;
+  if (options.fuzzyMillis && typeof a === 'number' && typeof b === 'number' && Number.isInteger(a) && Number.isInteger(b) && a >= 1e11 && b >= 1e11 && a < 1e14 && b < 1e14) return;
   if (a !== b) out.push(`${path}: local ${JSON.stringify(a)}, server ${JSON.stringify(b)}`);
 }
 

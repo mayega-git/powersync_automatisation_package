@@ -184,6 +184,9 @@ export function libraryStatic(ev: Evaluator, fqn: string, name: string, args: SV
   const type = simple(fqn);
   const arg = (index: number, what = `${type}.${name}`) => scalar(args[index], what, node);
   switch (type) {
+    case 'System':
+      if (name === 'currentTimeMillis' && args.length === 0) return pure({ k: 'now', type: 'epoch-millis' }, T.long);
+      break;
     case 'YearMonth':
       if (name === 'parse' && args.length === 1) {
         // YearMonth.parse(text): ISO "uuuu-MM"; null -> NullPointerException, anything else -> DateTimeParseException.
@@ -816,6 +819,19 @@ function listMethod(ev: Evaluator, receiver: ListSV, name: string, args: SV[], n
         return { ...receiver, e: { k: 'fold', of: receiver.e, as, acc, init: lit([]), body: cond(op('contains', vr(acc), vr(as)), vr(acc), op('append', vr(acc), vr(as))) } };
       }
       break;
+    case 'sorted/0':
+      // Natural order (sortExpr refuses element types whose Java order differs: UUID, enums...).
+      return { ...receiver, e: sortExpr(ev, receiver.e, element, { t: 'comparator', keys: [{ fn: undefined, desc: false, nulls: 'error', caseInsensitive: false }] }, node, scope) };
+    case 'boxed/0':
+      return receiver;
+    case 'sum/0': {
+      const acc = scope.block.fresh('acc');
+      const as = scope.block.fresh('it');
+      return pure({ k: 'fold', of: receiver.e, as, acc, init: lit(0), body: op('add', vr(acc), vr(as)) }, receiver.elem.name === 'java.lang.Object' ? T.int : receiver.elem);
+    }
+    case 'mapToObj/1':
+    case 'mapToInt/1':
+    case 'mapToLong/1':
     case 'map/1': {
       const as = scope.block.fresh('it');
       const value = mapElements(ev, args[0]!, receiver.e, as, element(vr(as)), scope.block, node, scope, 'Stream.map()');

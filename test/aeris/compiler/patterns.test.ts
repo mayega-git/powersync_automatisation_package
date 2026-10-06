@@ -704,3 +704,41 @@ public class StockController {
     expect(stale).toEqual({ status: 409, body: { error: 'STALE' }, code: expect.any(String) });
   });
 });
+
+describe('unordered advices', () => {
+  it('keeps the success path local and abandons only the ambiguous failure', async () => {
+    const advice = (name: string) => `
+package demo.orders;
+import java.util.Map;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.web.bind.annotation.RestControllerAdvice;
+@RestControllerAdvice
+public class ${name} {
+  @ExceptionHandler(IllegalArgumentException.class)
+  public ResponseEntity<Map<String, Object>> bad(IllegalArgumentException exception) {
+    return ResponseEntity.badRequest().body(Map.of("by", "${name}"));
+  }
+}
+`;
+    const artifact = await compileJava({
+      'demo/orders/AdviceA.java': advice('AdviceA'),
+      'demo/orders/AdviceB.java': advice('AdviceB'),
+      'demo/orders/CheckController.java': `
+package demo.orders;
+import org.springframework.web.bind.annotation.*;
+import reactor.core.publisher.Mono;
+@RestController
+public class CheckController {
+  @GetMapping("/api/check") public Mono<String> check(@RequestParam int value) {
+    if (value < 0) throw new IllegalArgumentException("negative");
+    return Mono.just("ok " + value);
+  }
+}
+` });
+    const plan = endpoint(artifact, 'GET /api/check');
+    expect(plan.offlineClass, plan.reasons.join('; ')).toBe('LOCAL_READ_SAFE');
+    expect((await run(artifact, 'GET /api/check', {}, { query: { value: '3' }, context: { tenantId: TENANT } })).body).toBe('ok 3');
+    await expect(run(artifact, 'GET /api/check', {}, { query: { value: '-1' }, context: { tenantId: TENANT } })).rejects.toThrow(/unordered exception handlers/);
+  });
+});

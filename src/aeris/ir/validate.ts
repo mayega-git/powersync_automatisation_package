@@ -461,7 +461,7 @@ function validateExpr(expr: Expr | undefined, scope: ReadonlySet<string>, state:
       validateExpr(expr.of, scope, state, next);
       return;
     case 'now':
-      if (!['datetime', 'datetime-local', 'date'].includes(expr.type)) problems.push(`${where}: invalid now type`);
+      if (!['datetime', 'datetime-local', 'date', 'epoch-millis'].includes(expr.type)) problems.push(`${where}: invalid now type`);
       return;
     case 'uuid':
       if (!(Number.isSafeInteger(expr.slot) && expr.slot >= 0 && expr.slot < state.uuidSlots)) problems.push(`${where}: uuid slot out of range`);
