@@ -9,6 +9,7 @@ import {
   FALSE,
   isLit,
   lit,
+  NULL,
   not,
   op,
   or,
@@ -42,6 +43,7 @@ function fallible(instrs: readonly Instr[]): boolean {
   return instrs.some((instr) => {
     if (instr.op === 'LET' || instr.op === 'EMIT_LOCAL_EVENT' || instr.op === 'QUEUE_INTENT') return false;
     if (instr.op === 'IF') return fallible(instr.then) || fallible(instr.else);
+    if (instr.op === 'TRY') return fallible(instr.fallback);
     return true;
   });
 }
@@ -104,7 +106,7 @@ export function reactiveCall(ev: Evaluator, receiver: MonoSV | FluxSV, name: str
   if (IDENTITY_OPERATORS.has(name)) return receiver;
   if (name === 'as' && args.length === 1) return ev.apply(args[0]!, [receiver], scope.block, node, scope);
   if (SIDE_CHANNEL_OPERATORS.has(name)) return sideChannel(ev, receiver, args, node, scope, name);
-  if (ERROR_HANDLERS.has(name)) return errorHandler(ev, receiver, node, name);
+  if (ERROR_HANDLERS.has(name)) return errorHandler(ev, receiver, args, node, scope, name);
   return receiver.t === 'mono' ? monoCall(ev, receiver, name, args, node, scope) : fluxCall(ev, receiver, name, args, node, scope);
 }
 
@@ -125,8 +127,87 @@ function sideChannel(ev: Evaluator, receiver: MonoSV | FluxSV, args: SV[], node:
   return receiver;
 }
 
-function errorHandler(ev: Evaluator, receiver: MonoSV | FluxSV, node: SyntaxNode, name: string): SV {
+/** Marks the caught error inside a fallback: its message and class are not modeled, so it may only be logged. */
+const CAUGHT = '__aeris_caught_error__';
+
+function readOnly(instrs: readonly Instr[]): boolean {
+  return instrs.every((instr) => {
+    if (instr.op === 'IF') return readOnly(instr.then) && readOnly(instr.else);
+    if (instr.op === 'TRY') return readOnly(instr.body) && readOnly(instr.fallback);
+    return instr.op === 'QUERY' || instr.op === 'LET' || instr.op === 'ASSERT';
+  });
+}
+
+/**
+ * Mono.onErrorReturn(v) / onErrorResume(e -> mono) / onErrorComplete() over a
+ * read-only source: a TRY whose body forces the emitted value (Reactor
+ * computes it inside the chain, so its failures are caught too) and whose
+ * fallback produces the replacement.
+ */
+function recoverMono(ev: Evaluator, receiver: MonoSV, args: SV[], node: SyntaxNode, scope: Scope, name: string): MonoSV {
+  return mono(receiver.elem, (block) => {
+    const probe = attempt(block, (child) => receiver.run(child));
+    if (probe.outcome.ok && !fallible(probe.instrs)) {
+      // Nothing in the source can fail before the value is used: the handler never runs.
+      for (const instr of probe.instrs) block.emit(instr);
+      return probe.outcome.value;
+    }
+    const emptySlot = block.fresh('recovered');
+    const valueSlot = block.fresh('recovered');
+    const settle = (child: Block, emission: Emission) => {
+      child.emit({ op: 'LET', out: emptySlot, expr: emission.empty });
+      if (emission.value.t !== 'void') child.emit({ op: 'LET', out: valueSlot, expr: cond(emission.empty, NULL, ev.encode(emission.value)) });
+    };
+    const body = attempt(block, (child) => {
+      const emission = receiver.run(child);
+      settle(child, emission);
+      return emission;
+    });
+    const fallback = attempt(block, (child): Emission => {
+      let emission: Emission;
+      if (name === 'onErrorComplete') {
+        emission = { value: VOID, empty: TRUE };
+      } else if (name === 'onErrorReturn') {
+        const value = args[0]!;
+        if (value.t === 'pure' && isLit(value.e, null)) throw new Unsupported('onErrorReturn(null) throws', node);
+        emission = { value, empty: FALSE };
+      } else {
+        const resumed = ev.apply(args[0]!, [{ t: 'exception', cls: 'java.lang.Throwable', message: vr(CAUGHT) }], child, node, scope);
+        if (resumed.t !== 'mono') throw new Unsupported('onErrorResume() does not resume with a Mono', node);
+        emission = resumed.run(child);
+      }
+      settle(child, emission);
+      return emission;
+    });
+    if (!fallback.outcome.ok) throw new Unsupported(`${name}() rethrows`, node);
+    if (!readOnly(body.instrs) || !readOnly(fallback.instrs)) throw new Unsupported(`${name}() recovers from an operation that writes`, node);
+    if (JSON.stringify(fallback.instrs).includes(CAUGHT)) throw new Unsupported(`${name}() inspects the caught error`, node);
+    const recovered = fallback.outcome.value.value;
+    const produced = body.outcome.ok ? body.outcome.value.value : recovered;
+    block.emit({ op: 'TRY', body: body.instrs, fallback: fallback.instrs });
+    const value = shapeOf(ev, produced, recovered, vr(valueSlot), node);
+    return { value, empty: vr(emptySlot) };
+  });
+}
+
+/** One symbolic view over the value of either side of a TRY. */
+function shapeOf(ev: Evaluator, a: SV, b: SV, e: Expr, node: SyntaxNode): SV {
+  if (a.t === 'void' && b.t === 'void') return VOID;
+  const known = [a, b].filter((value) => value.t !== 'void');
+  const like = known[0]!;
+  for (const other of known) {
+    if (other.t !== like.t || (other.t === 'obj' && like.t === 'obj' && other.cls !== like.cls)) {
+      throw new Unsupported('The recovered value has a different shape than the original one', node);
+    }
+  }
+  if (like.t !== 'pure' && like.t !== 'list' && like.t !== 'obj') throw new Unsupported('The recovered value is not a plain value', node);
+  return ev.reView(like, e);
+}
+
+function errorHandler(ev: Evaluator, receiver: MonoSV | FluxSV, args: SV[], node: SyntaxNode, scope: Scope, name: string): SV {
   if (receiver.t === 'mono') {
+    const recoverable = (name === 'onErrorReturn' && args.length === 1) || (name === 'onErrorResume' && args.length === 1) || (name === 'onErrorComplete' && args.length === 0);
+    if (recoverable) return recoverMono(ev, receiver, args, node, scope, name);
     return mono(receiver.elem, (block) => {
       const probe = attempt(block, (child) => receiver.run(child));
       if (!probe.outcome.ok || fallible(probe.instrs)) throw new Unsupported(`${name}() changes the outcome of a failing operation`, node);

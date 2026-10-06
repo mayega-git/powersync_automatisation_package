@@ -97,6 +97,7 @@ export function walk(program: readonly Instr[]): Instr[] {
   for (const instr of program) {
     out.push(instr);
     if (instr.op === 'IF') out.push(...walk(instr.then), ...walk(instr.else));
+    if (instr.op === 'TRY') out.push(...walk(instr.body), ...walk(instr.fallback));
   }
   return out;
 }

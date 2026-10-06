@@ -2,6 +2,7 @@ import type { Expr } from '../../ir/types.js';
 import type { JType } from '../java/model.js';
 import type { SyntaxNode } from '../java/parser.js';
 import { attempt, branch, mergeEmission } from './branching.js';
+import { fieldTypeOf } from './persistence.js';
 import { mapElements } from './reactive.js';
 import type { Evaluator, Scope } from './evaluator.js';
 import {
@@ -174,7 +175,13 @@ export function libraryStatic(ev: Evaluator, fqn: string, name: string, args: SV
         return listOf(ev, args, args[0]?.t === 'pure' ? args[0].jt : T.object);
       }
       if (name === 'copyOf' && args.length === 1 && args[0]!.t === 'obj' && args[0].cls === 'aeris.MutableSet') return ev.asList(args[0], node, scope);
-      if (name === 'copyOf' && args.length === 1 && args[0]!.t === 'list') throw new Unsupported('Set.copyOf() removes duplicates', node);
+      if (name === 'copyOf' && args.length === 1 && args[0]!.t === 'list') {
+        // Duplicates collapse; Java's iteration order of the copy is unspecified, first occurrence order is one valid order.
+        const source = args[0];
+        // Only value elements: Java's equality of other objects may be identity.
+        if (fieldTypeOf(ev.project, source.elem) === undefined) throw new Unsupported('Set.copyOf() of objects relies on their equals()', node);
+        return { ...source, e: op('distinct', source.e, FALSE) };
+      }
       break;
     case 'Map':
       if (name === 'of' && args.length % 2 === 0) {
@@ -583,7 +590,7 @@ function optionalMethod(ev: Evaluator, receiver: SV & { t: 'optional' }, name: s
       return pure(not(receiver.present), T.boolean);
     case 'get/0':
     case 'orElseThrow/0':
-      scope.block.emit({ op: 'ASSERT', test: receiver.present, error: { status: 500, code: 'NO_SUCH_ELEMENT', message: lit('No value present') } });
+      scope.block.emit({ op: 'ASSERT', test: receiver.present, error: ev.errors.map({ t: 'exception', cls: 'java.util.NoSuchElementException', message: lit('No value present') }) });
       return receiver.value;
     case 'orElse/1':
       return ev.merge(receiver.present, receiver.value, args[0]!);
@@ -624,6 +631,14 @@ function listMethod(ev: Evaluator, receiver: ListSV, name: string, args: SV[], n
         ev.apply(fn, [inner.env.get('__aeris_each__')!], inner.block, node, inner);
       }, node, scope);
       return { t: 'void' };
+    }
+    case 'getFirst/0':
+    case 'getLast/0': {
+      // Java 21 sequenced collections: NoSuchElementException on an empty list.
+      scope.block.emit({ op: 'ASSERT', test: not(op('isEmpty', receiver.e)), error: ev.errors.map({ t: 'exception', cls: 'java.util.NoSuchElementException', message: lit(null) }) });
+      if (name === 'getFirst') return element(op('first', receiver.e));
+      const as = scope.block.fresh('it');
+      return element({ k: 'fold', of: receiver.e, as, acc: scope.block.fresh('acc'), init: NULL, body: vr(as) });
     }
     case 'findFirst/0':
     case 'findAny/0':

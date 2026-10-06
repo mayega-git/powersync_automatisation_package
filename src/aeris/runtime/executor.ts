@@ -249,6 +249,18 @@ class Frame {
         return undefined;
       case 'IF':
         return truthy(this.eval(instr.test)) ? this.block(instr.then) : this.block(instr.else);
+      case 'TRY': {
+        // Both blocks are read-only (validated): only the variable bindings need undoing.
+        const saved = new Map(this.vars);
+        try {
+          return await this.block(instr.body);
+        } catch (error) {
+          if (!(error instanceof AerisHttpError)) throw error;
+          this.vars.clear();
+          for (const [name, value] of saved) this.vars.set(name, value);
+          return this.block(instr.fallback);
+        }
+      }
       case 'INSERT': {
         const projection = this.projection(instr.entity);
         const row: StoredRow = {};
@@ -595,6 +607,14 @@ class Frame {
       case 'append': {
         if (!Array.isArray(a)) throw new AerisHttpError(500, 'NULL_DEREFERENCE', 'add() on a non-list value.');
         return [...a, b];
+      }
+      case 'distinct': {
+        // Set semantics: duplicates collapse (first occurrence kept). The second argument says whether
+        // null is admitted (new HashSet<>(c)) or throws (Set.copyOf(c)).
+        if (!Array.isArray(a)) throw new AerisHttpError(500, 'NULL_DEREFERENCE', 'distinct() of a non-list value.');
+        if (b !== true && a.some((item) => item === null)) throw new AerisHttpError(500, 'NULL_DEREFERENCE', 'Set.copyOf() of a collection containing null.');
+        const same = (x: JsonValue, y: JsonValue) => (x === null || y === null ? x === y : valuesEqual(x, y));
+        return a.filter((item, index) => a.findIndex((other) => same(other, item)) === index);
       }
       case 'take': {
         if (!Array.isArray(a)) throw new AerisHttpError(500, 'NULL_DEREFERENCE', 'take() of a non-list value.');

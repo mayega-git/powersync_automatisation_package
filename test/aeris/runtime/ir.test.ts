@@ -55,6 +55,35 @@ describe('validateArtifact', () => {
     expect(() => validateArtifact(unknownField)).toThrow(/nope/);
   });
 
+  it('accepts read-only TRY blocks and refuses writes or one-sided bindings in them', () => {
+    const lit = (v: unknown) => ({ k: 'lit', v }) as never;
+    const ok = withEndpoint((plan) => ({
+      ...plan,
+      program: [
+        { op: 'TRY', body: [{ op: 'QUERY', out: 'rows', entity: 'SalesPoint', mode: 'many', where: [] }, { op: 'LET', out: 'n', expr: lit(1) }], fallback: [{ op: 'LET', out: 'n', expr: lit(0) }] },
+        { op: 'RETURN', status: 200, body: { k: 'var', name: 'n' } },
+      ],
+    }), 0);
+    expect(() => validateArtifact(ok)).not.toThrow();
+    const oneSided = withEndpoint((plan) => ({
+      ...plan,
+      program: [
+        { op: 'TRY', body: [{ op: 'QUERY', out: 'rows', entity: 'SalesPoint', mode: 'many', where: [] }], fallback: [] },
+        { op: 'RETURN', status: 200, body: { k: 'var', name: 'rows' } },
+      ],
+    }), 0);
+    expect(() => validateArtifact(oneSided)).toThrow(/rows/);
+    const writes = withEndpoint((plan) => ({
+      ...plan,
+      program: [
+        { op: 'TRY', body: [{ op: 'DELETE', entity: 'SalesPoint', key: lit('x') }], fallback: [] },
+        { op: 'QUEUE_INTENT' },
+        { op: 'RETURN', status: 204, body: null },
+      ],
+    }), 0);
+    expect(() => validateArtifact(writes)).toThrow(/read-only/);
+  });
+
   it('refuses local classes that still carry unresolved items, and unscoped private projections', () => {
     const unresolved = withEndpoint((plan) => ({ ...plan, unresolved: ['call x() unresolved'] }), 0);
     expect(() => validateArtifact(unresolved)).toThrow(AerisValidationError);

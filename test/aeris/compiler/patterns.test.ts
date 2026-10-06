@@ -266,4 +266,33 @@ public class KindController {
     const none = await run(artifact, 'GET /api/orders/{orderId}/kind', { 'demo.orders.LineEntity': [line(1, 'bolt', 1, 'GOODS')] }, { params: { orderId: ORDER }, context: { tenantId: TENANT } });
     expect(none.body).toBe('none');
   });
+
+  it('compiles Mono.onErrorReturn into a read-only TRY that also catches failures of the mapped value', async () => {
+    const artifact = await compileJava({ ...SOURCES, 'demo/orders/HeadlineController.java': `
+package demo.orders;
+import demo.kernel.RequestContextHolder;
+import java.util.UUID;
+import org.springframework.web.bind.annotation.*;
+import reactor.core.publisher.Mono;
+@RestController
+@RequestMapping("/api/orders")
+public class HeadlineController {
+  private final LinePort lines;
+  public HeadlineController(LinePort lines) { this.lines = lines; }
+  @GetMapping("/{orderId}/headline") public Mono<String> headline(@PathVariable UUID orderId) {
+    return RequestContextHolder.getRequiredContext()
+        .flatMap(ctx -> lines.forOrder(ctx.tenantId(), orderId).collectList())
+        .map(items -> items.getFirst().label().toUpperCase())
+        .onErrorReturn("none");
+  }
+}
+` });
+    const plan = endpoint(artifact, 'GET /api/orders/{orderId}/headline');
+    expect(plan.offlineClass, plan.reasons.join('; ')).toBe('LOCAL_READ_SAFE');
+    expect(JSON.stringify(plan.program)).toContain('"op":"TRY"');
+    const ask = (rows: Record<string, unknown>[]) => run(artifact, 'GET /api/orders/{orderId}/headline', { 'demo.orders.LineEntity': rows as never }, { params: { orderId: ORDER }, context: { tenantId: TENANT } });
+    expect(await ask([line(1, 'bolt', 1, 'GOODS')])).toEqual({ status: 200, body: 'BOLT' });
+    expect(await ask([])).toEqual({ status: 200, body: 'none' });
+    expect(await ask([line(1, ' ', 1, 'GOODS')])).toEqual({ status: 200, body: 'none' });
+  });
 });

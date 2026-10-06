@@ -330,6 +330,18 @@ function validateInstr(instr: Instr, scope: Set<string>, state: ProgramState, de
       }
       return thenEnds && elseEnds;
     }
+    case 'TRY': {
+      const bodyScope = new Set(scope);
+      const fallbackScope = new Set(scope);
+      const bodyEnds = validateBlock(instr.body, bodyScope, state, depth + 1);
+      const fallbackEnds = validateBlock(instr.fallback, fallbackScope, state, depth + 1);
+      if (!readOnly(instr.body) || !readOnly(instr.fallback)) problems.push(`${where}: TRY blocks must be read-only and cannot return`);
+      // After a TRY, a variable is defined when both the body and the fallback define it.
+      for (const name of new Set([...bodyScope, ...fallbackScope])) {
+        if ((bodyEnds || bodyScope.has(name)) && (fallbackEnds || fallbackScope.has(name))) scope.add(name);
+      }
+      return fallbackEnds;
+    }
     case 'INSERT':
     case 'UPDATE': {
       const projection = entityOf(instr.entity, state);
@@ -499,6 +511,14 @@ function entityOf(entity: string, state: ProgramState): Projection | undefined {
   const projection = state.projections.get(entity);
   if (projection === undefined) state.problems.push(`${state.where}: unknown entity ${entity}`);
   return projection;
+}
+
+function readOnly(block: readonly Instr[]): boolean {
+  return block.every((instr) => {
+    if (instr.op === 'IF') return readOnly(instr.then) && readOnly(instr.else);
+    if (instr.op === 'TRY') return readOnly(instr.body) && readOnly(instr.fallback);
+    return instr.op === 'QUERY' || instr.op === 'LET' || instr.op === 'ASSERT';
+  });
 }
 
 function define(name: string, scope: Set<string>, state: ProgramState): void {

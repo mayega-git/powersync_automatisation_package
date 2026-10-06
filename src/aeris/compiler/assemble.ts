@@ -349,7 +349,9 @@ function serverCheckedWrites(draft: EndpointDraft, entities: ReadonlyMap<string,
 }
 
 function containsQuery(program: readonly Instr[]): boolean {
-  return program.some((instr) => instr.op === 'QUERY' || (instr.op === 'IF' && (containsQuery(instr.then) || containsQuery(instr.else))));
+  return program.some((instr) => instr.op === 'QUERY'
+    || (instr.op === 'IF' && (containsQuery(instr.then) || containsQuery(instr.else)))
+    || (instr.op === 'TRY' && (containsQuery(instr.body) || containsQuery(instr.fallback))));
 }
 
 /** Client-generated keys of inserted rows, located in the response so receipts can remap them. */

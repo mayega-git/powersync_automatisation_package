@@ -74,6 +74,11 @@ export function queryGuards(program: readonly Instr[]): QueryGuard[] {
         visit(instr.else);
         return;
       }
+      if (instr.op === 'TRY') {
+        visit(instr.body);
+        visit(instr.fallback);
+        return;
+      }
       if (instr.op !== 'QUERY') return;
       const pairs = filterPairs(instr.where);
       if (instr.mode === 'one') {

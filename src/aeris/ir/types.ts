@@ -89,14 +89,14 @@ export type ExprOp =
   | 'min' | 'max' | 'abs'
   | 'size' | 'first' | 'replace'
   | 'take' | 'strip' | 'setScale' | 'divide' | 'append'
-  | 'range' | 'replaceAll' | 'matches';
+  | 'range' | 'replaceAll' | 'matches' | 'distinct';
 
 export const EXPR_OPS: readonly ExprOp[] = [
   'eq', 'ne', 'lt', 'le', 'gt', 'ge', 'and', 'or', 'not', 'isNull', 'notNull',
   'add', 'sub', 'mul', 'div', 'neg', 'mod', 'concat', 'coalesce',
   'lower', 'upper', 'trim', 'length', 'isBlank', 'isEmpty',
   'startsWith', 'endsWith', 'contains', 'min', 'max', 'abs', 'size', 'first', 'replace',
-  'take', 'strip', 'setScale', 'divide', 'append', 'range', 'replaceAll', 'matches',
+  'take', 'strip', 'setScale', 'divide', 'append', 'range', 'replaceAll', 'matches', 'distinct',
 ];
 
 /** java.math.RoundingMode names accepted by setScale / divide (as string literals). */
@@ -204,6 +204,12 @@ export type Instr =
   /** Aborts the operation with the given error when `test` is false. */
   | { op: 'ASSERT'; test: Expr; error: ErrorSpec }
   | { op: 'IF'; test: Expr; then: readonly Instr[]; else: readonly Instr[] }
+  /**
+   * Runs the read-only `body`; if it fails with an operation error, its
+   * bindings are discarded and the read-only `fallback` runs instead
+   * (Reactor onErrorReturn / onErrorResume on a Mono).
+   */
+  | { op: 'TRY'; body: readonly Instr[]; fallback: readonly Instr[] }
   /** Inserts one row; `out` receives the stored record. */
   | { op: 'INSERT'; entity: string; values: Readonly<Record<string, Expr>>; out?: string }
   /** Updates the row with the given key; fails when it does not exist. */

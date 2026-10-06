@@ -15,7 +15,12 @@ export function definedNames(instrs: readonly Instr[]): Set<string> {
   for (const instr of instrs) {
     if (instr.op === 'QUERY' || instr.op === 'LET') out.add(instr.out);
     else if ((instr.op === 'INSERT' || instr.op === 'UPDATE') && instr.out !== undefined) out.add(instr.out);
-    else if (instr.op === 'IF') {
+    else if (instr.op === 'TRY') {
+      const left = definedNames(instr.body);
+      const right = definedNames(instr.fallback);
+      if (endsAbruptly(instr.body)) for (const name of right) out.add(name);
+      else for (const name of right) if (left.has(name)) out.add(name);
+    } else if (instr.op === 'IF') {
       // A branch that never completes does not constrain what is defined after the IF.
       const thenEnds = endsAbruptly(instr.then);
       const elseEnds = endsAbruptly(instr.else);
@@ -35,6 +40,7 @@ function endsAbruptly(instrs: readonly Instr[]): boolean {
   if (last.op === 'RETURN') return true;
   if (last.op === 'ASSERT' && isLit(last.test, false)) return true;
   if (last.op === 'IF') return endsAbruptly(last.then) && endsAbruptly(last.else);
+  if (last.op === 'TRY') return endsAbruptly(last.fallback);
   return false;
 }
 

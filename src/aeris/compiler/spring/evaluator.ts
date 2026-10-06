@@ -672,7 +672,7 @@ export class Evaluator {
   }
 
   /** Re-expresses a value of the same shape as `like` over a new expression. */
-  private reView(like: SV, e: Expr): SV {
+  reView(like: SV, e: Expr): SV {
     switch (like.t) {
       case 'pure': return pure(e, like.jt);
       case 'list': return { ...like, e };
@@ -1489,6 +1489,11 @@ export class Evaluator {
     if (typed.length === 1) return typed[0]!;
     const own = typed.filter((method) => method.owner === type && method.body !== undefined);
     if (own.length === 1) return own[0]!;
+    // Same signature inherited twice: a class implementation wins over interface declarations.
+    const sameSignature = typed.every((method) => method.params.length === typed[0]!.params.length
+      && method.params.every((param, index) => param.type.name === typed[0]!.params[index]!.type.name));
+    const concrete = typed.filter((method) => method.body !== undefined && method.owner.kind === 'class');
+    if (sameSignature && concrete.length === 1) return concrete[0]!;
     this.fail(`Ambiguous overload ${type.simple}.${name}/${args.length}`, node, scope);
   }
 
@@ -1613,7 +1618,8 @@ export class Evaluator {
     }
     const decl = this.project.type(target.cls);
     if (decl === undefined) this.fail(`Unknown class ${target.cls}`, node, scope);
-    const candidates = this.project.methodsOf(decl, name).filter((method) => method.params.length === args.length);
+    const candidates = this.project.methodsOf(decl, name)
+      .filter((method) => method.params.length === args.length || (method.varargs && args.length >= method.params.length - 1));
     if (candidates.length > 0) {
       const method = this.resolve(decl, name, args, node, scope);
       return this.inline(method, method.modifiers.has('static') ? undefined : target, args, node, scope);
@@ -1718,6 +1724,12 @@ export class Evaluator {
     }
     if (['LinkedHashSet', 'HashSet'].includes(simpleName) && (args.length === 0 || (args.length === 1 && args[0]!.t === 'pure' && isIntegral(args[0].jt)))) {
       return this.newObject(MUTABLE_SET, new Map([['$items', { t: 'list', e: lit([]), elem: T.object, element: (item: Expr) => pure(item, T.object) } as SV]]));
+    }
+    if (['LinkedHashSet', 'HashSet'].includes(simpleName) && args.length === 1) {
+      const source = this.asList(args[0]!, node, scope);
+      if (fieldTypeOf(this.project, source.elem) === undefined) this.fail('Sets of objects rely on equals()/hashCode()', node, scope);
+      // Duplicates collapse (first occurrence kept); HashSet admits null.
+      return this.newObject(MUTABLE_SET, new Map([['$items', { ...source, e: op('distinct', source.e, TRUE) } as SV]]));
     }
     const decl = this.project.type(fqn);
     if (this.isException(fqn)) return this.exception(fqn, args, node, scope);
@@ -2306,6 +2318,13 @@ export function retype(value: SV, declared: JType): SV {
   }
   if (value.t === 'flux' && typeName(declared) === 'Flux' && declared.args[0] !== undefined && !declared.args[0].unresolved) {
     return { ...value, elem: declared.args[0] };
+  }
+  // Collections built with a diamond (new LinkedHashSet<>()) learn their element type from the declaration.
+  const element = declared.args[0];
+  if (value.t === 'list' && value.elem.name === 'java.lang.Object' && element !== undefined && !element.unresolved && element.name !== 'java.lang.Object'
+    && ['List', 'Set', 'Collection', 'Iterable', 'ArrayList', 'LinkedHashSet', 'HashSet', 'LinkedList'].includes(typeName(declared))) {
+    const view = value.element;
+    return { ...value, elem: element, element: (item) => retype(view(item), element) };
   }
   return value;
 }

@@ -59,6 +59,12 @@ export function prettyProgram(program: readonly Instr[], indent = ''): string {
           lines.push(prettyProgram(instr.else, `${indent}  `));
         }
         break;
+      case 'TRY':
+        lines.push(`${indent}TRY`);
+        lines.push(prettyProgram(instr.body, `${indent}  `));
+        lines.push(`${indent}ON ERROR`);
+        lines.push(prettyProgram(instr.fallback, `${indent}  `));
+        break;
       case 'INSERT': lines.push(`${indent}INSERT ${shortName(instr.entity)} ${prettyExpr({ k: 'object', fields: instr.values })}${instr.out ? ` -> ${instr.out}` : ''}`); break;
       case 'UPDATE': lines.push(`${indent}UPDATE ${shortName(instr.entity)}[${prettyExpr(instr.key)}] SET ${prettyExpr({ k: 'object', fields: instr.values })}`); break;
       case 'DELETE': lines.push(`${indent}DELETE ${shortName(instr.entity)}[${prettyExpr(instr.key)}]`); break;
