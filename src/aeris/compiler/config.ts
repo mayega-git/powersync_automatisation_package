@@ -8,9 +8,15 @@ export interface ContextSource {
   /**
    * required: Mono<T> of the session record T (claims = its components);
    * optional: Mono<Optional<T>>;
-   * claim: Mono<X> of one claim, empty when absent.
+   * claim: Mono<X> of one claim, empty when absent;
+   * metadata: Mono<Optional<T>> of request metadata (correlation id, remote
+   * address, request path) that a device genuinely does not have. The value
+   * is present but opaque: reading any part of it is refused, so it can only
+   * be handed to a method declared in `inertEffects`. The compiler therefore
+   * never has to invent a value, and no endpoint whose answer depends on
+   * request metadata can be served locally.
    */
-  kind: 'required' | 'optional' | 'claim';
+  kind: 'required' | 'optional' | 'claim' | 'metadata';
   /** For required/optional: the record or class carrying the claims. */
   type?: string;
   /** For claim: the claim name. */
@@ -31,6 +37,22 @@ export interface CompilerConfig {
   };
   /** Type name prefixes whose use is an external, irreversible effect (forces ONLINE_REQUIRED). */
   externalEffects: string[];
+  /**
+   * Methods whose only effect is server-side bookkeeping the device must not
+   * reproduce: audit trails, access logs, metrics. Written as `Class.method`
+   * or `pkg.Class.method` (globs allowed).
+   *
+   * A declared method is modeled as a no-op instead of being analyzed, which
+   * is only sound because the compiler refuses the declaration unless the
+   * method returns nothing (`void` or `Mono<Void>`): having no value, it
+   * provably cannot reach the response, an authorization decision or a
+   * stored row. Its own writes are server-side and happen when the operation
+   * is replayed through the backend's API at reconciliation.
+   *
+   * Every skipped call is recorded as `inert` evidence in the artifact, so a
+   * reviewer can see exactly what each endpoint was allowed to ignore.
+   */
+  inertEffects: string[];
   /**
    * Backend-side idempotency: replays carrying this header are applied once
    * (e.g. an Idempotency-Key web filter). Without it, creations cannot be
@@ -63,6 +85,7 @@ export const DEFAULT_CONFIG: CompilerConfig = {
   activeProfiles: [],
   serverTimeZone: 'UTC',
   context: { sources: [] },
+  inertEffects: [],
   externalEffects: [
     'org.springframework.web.reactive.function.client.WebClient',
     'org.springframework.web.client.RestTemplate',
@@ -127,8 +150,8 @@ export function mergeConfig(raw: unknown): CompilerConfig {
   }
   if (input.context?.sources !== undefined) {
     config.context.sources = input.context.sources.map((source, index) => {
-      if (typeof source?.method !== 'string' || !['required', 'optional', 'claim'].includes(source.kind)) {
-        throw new Error(`context.sources[${index}] needs a method and a kind (required, optional or claim).`);
+      if (typeof source?.method !== 'string' || !['required', 'optional', 'claim', 'metadata'].includes(source.kind)) {
+        throw new Error(`context.sources[${index}] needs a method and a kind (required, optional, claim or metadata).`);
       }
       if (source.kind === 'claim' && typeof source.claim !== 'string') throw new Error(`context.sources[${index}] needs a claim.`);
       if (source.kind !== 'claim' && typeof source.type !== 'string') throw new Error(`context.sources[${index}] needs a type.`);
@@ -142,6 +165,7 @@ export function mergeConfig(raw: unknown): CompilerConfig {
   }
   if (input.externalEffects !== undefined) config.externalEffects = stringList(input.externalEffects, 'externalEffects');
   if (input.externalEffectsExtra !== undefined) config.externalEffects.push(...stringList(input.externalEffectsExtra, 'externalEffectsExtra'));
+  if (input.inertEffects !== undefined) config.inertEffects = stringList(input.inertEffects, 'inertEffects');
   if (input.idempotency !== undefined) {
     const idem = input.idempotency;
     if (typeof idem.header !== 'string') throw new Error('idempotency.header must be a string.');

@@ -243,7 +243,9 @@ export type Instr =
 export type EvidenceKind =
   | 'route' | 'handler' | 'call' | 'database-read' | 'database-write'
   | 'validation' | 'authorization' | 'transaction' | 'external-effect'
-  | 'context' | 'annotation' | 'config' | 'schema';
+  | 'context' | 'annotation' | 'config' | 'schema'
+  /** A call skipped as declared server-side bookkeeping (`inertEffects`). */
+  | 'inert-effect';
 
 export interface Evidence {
   kind: EvidenceKind;

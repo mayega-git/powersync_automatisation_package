@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import type { ErrorSpec, Evidence, EvidenceKind, Expr, FieldType, Filter } from '../../ir/types.js';
 import { typeName, type FieldDecl, type JavaProject, type JType, type MethodDecl, type TypeDecl } from '../java/model.js';
 import { field, named, stringValue, type SyntaxNode } from '../java/parser.js';
-import type { CompilerConfig } from '../config.js';
+import { globMatch, type CompilerConfig } from '../config.js';
 import { asBool, attempt, branch, Diverged, emitIf, foldPureInstrs, mergeEmission, restoreObjects, simplifyCond, snapshotObjects } from './branching.js';
 import { libraryInstance, libraryStatic, libraryStaticField } from './library.js';
 import { CRUD_METHODS, fieldTypeOf, type EntityModel, type PersistenceModel, type RepositoryModel } from './persistence.js';
@@ -1529,6 +1529,8 @@ export class Evaluator {
   inline(method: MethodDecl, self: SV | undefined, argsIn: SV[], node: SyntaxNode, scope: Scope): SV {
     let args = argsIn;
     if (method.synthetic !== undefined) return this.synthetic(method, self, args, node, scope);
+    const inert = this.inertEffect(method, node, scope);
+    if (inert !== undefined) return inert;
     if (method.body === undefined) {
       if (self?.t === 'bean' && self.cls !== method.owner) {
         const impl = this.resolve(self.cls, method.name, args, node, scope);
@@ -1560,6 +1562,35 @@ export class Evaluator {
     } finally {
       this.stack.pop();
     }
+  }
+
+  /**
+   * A call to a method declared in `inertEffects`: server-side bookkeeping
+   * (audit, access log, metrics) that the device must not reproduce, because
+   * the server performs it itself when the operation is replayed through its
+   * API at reconciliation.
+   *
+   * Skipping a call is only sound when it cannot be observed, so the
+   * declaration is honored only for a method that returns nothing. Anything
+   * else fails closed — the endpoint becomes UNSUPPORTED rather than silently
+   * trusting a declaration that could hide a value reaching the response, an
+   * authorization decision or a stored row. A declaration that matches no
+   * method simply never applies, which also fails closed.
+   */
+  private inertEffect(method: MethodDecl, node: SyntaxNode, scope: Scope): SV | undefined {
+    if (this.config.inertEffects.length === 0) return undefined;
+    const symbol = `${method.owner.simple}.${method.name}`;
+    const qualified = `${method.owner.fqn}.${method.name}`;
+    if (!this.config.inertEffects.some((pattern) => globMatch(pattern, symbol) || globMatch(pattern, qualified))) return undefined;
+    const returned = method.returnType;
+    const name = typeName(returned);
+    const voidResult = name === 'void' && returned.array === 0;
+    const voidMono = name === 'Mono' && returned.args.length === 1 && typeName(returned.args[0]!) === 'Void';
+    if (!voidResult && !voidMono) {
+      this.fail(`${qualified} is declared an inert effect but returns ${name}: only void and Mono<Void> carry no value`, node, scope);
+    }
+    this.record('inert-effect', node, method.owner.file.path, qualified);
+    return voidResult ? VOID : { t: 'mono', elem: T.void, run: () => ({ value: VOID, empty: TRUE }) };
   }
 
   private synthetic(method: MethodDecl, self: SV | undefined, args: SV[], node: SyntaxNode, scope: Scope): SV {
@@ -1914,6 +1945,13 @@ export class Evaluator {
     if (source.kind === 'claim') {
       const claim = source.claim!;
       return { t: 'mono', elem: T.uuid, run: () => ({ value: pure({ k: 'ctx', name: claim }, T.uuid), empty: op('isNull', { k: 'ctx', name: claim }) }) };
+    }
+    if (source.kind === 'metadata') {
+      // Request metadata the device does not have: present, so a handler that
+      // only forwards it to an inert sink compiles, but opaque, so reading any
+      // part of it is refused instead of being invented.
+      const opaque: SV = { t: 'opaque', what: `request metadata (${source.type})` };
+      return { t: 'mono', elem: T.object, run: () => ({ value: { t: 'optional', value: opaque, present: TRUE }, empty: FALSE }) };
     }
     const type = this.project.type(source.type!) ?? [...(this.project.bySimple.get(source.type!) ?? [])][0];
     if (type === undefined) throw new Unsupported(`Context type ${source.type} is not in the analyzed sources.`);

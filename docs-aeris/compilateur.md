@@ -38,9 +38,15 @@ serverTimeZone: UTC                   # zone JVM, pour LocalDateTime.now()
 context:
   sources:                            # méthodes statiques renvoyant la session vérifiée
     - method: ReactiveRequestContextHolder.getRequiredContext
-      kind: required                  # required | optional | claim
+      kind: required                  # required | optional | claim | metadata
       type: yowyob.comops.api.kernel.domain.model.TenantContext
+    - method: ReactiveRequestContextHolder.getCorrelation
+      kind: metadata                  # métadonnée de requête : présente mais opaque
+      type: yowyob.comops.api.kernel.domain.model.RequestCorrelation
   authentication: yowyob.comops.api.kernel.config.ApiKeyAuthenticationToken
+inertEffects:                         # comptabilité serveur, rejouée à la réconciliation
+  - RecordSystemAuditUseCase.record
+  - BusinessEventPublisher.publish
 idempotency:                          # seulement si le backend déduplique vraiment
   header: Idempotency-Key
   methods: [POST, PUT, PATCH, DELETE]
@@ -60,6 +66,34 @@ freshness: { LOCAL_READ_SAFE: 86400, SPECULATIVE: 900 }
 
 Les claims de session sont les composants du record de contexte (`tenantId`,
 `organizationId`, `agencyId`, `userId`…). Le runtime doit fournir les mêmes noms.
+
+### Métadonnée de requête et effets inertes
+
+Deux déclarations traitent ce qu'un appareil ne peut pas reproduire, sans jamais
+inventer de valeur. Elles sont **vérifiées par le compilateur**, pas seulement crues.
+
+Une source `kind: metadata` modélise un accesseur de métadonnée de requête
+(identifiant de corrélation, adresse d'appel, chemin). Sa valeur est **présente mais
+opaque** : en lire la moindre partie est refusé. Un handler qui ne fait que la
+transmettre compile ; dès que sa réponse en dépend, l'endpoint reste `UNSUPPORTED`.
+
+`inertEffects` déclare les méthodes dont le seul effet est de la comptabilité serveur
+— piste d'audit, journal d'accès, métriques, outbox d'événements. L'appel est modélisé
+comme un no-op au lieu d'être analysé, ce qui n'est juste que parce qu'une écriture
+hors ligne est rejouée **via l'API du backend** à la réconciliation : c'est le serveur
+qui écrit sa ligne d'audit, avec la vraie métadonnée.
+
+Trois garde-fous rendent ces déclarations sûres :
+
+1. **Le compilateur refuse une déclaration sur une méthode qui renvoie une valeur.**
+   Seuls `void` et `Mono<Void>` sont acceptés : n'ayant aucune valeur, l'appel ne peut
+   pas atteindre la réponse, une décision d'autorisation ou une ligne stockée. Une
+   méthode qui répond quelque chose rend l'endpoint `UNSUPPORTED`, avec sa raison.
+2. **Une déclaration qui ne correspond à rien n'a aucun effet** (faute de frappe
+   incluse) : on perd de la couverture, jamais de la sûreté.
+3. **Chaque appel ignoré est inscrit dans l'artefact** en évidence `inert-effect`, avec
+   son symbole qualifié et son fichier : un relecteur voit exactement ce que chaque
+   endpoint a eu le droit d'ignorer.
 
 ## Classification
 
