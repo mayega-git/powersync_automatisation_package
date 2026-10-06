@@ -451,4 +451,44 @@ public class EchoController {
     expect((await run(artifact, 'GET /api/echo', {}, { query: { text: 'a' }, context: { tenantId: TENANT } })).body).toBe('A');
     await expect(run(artifact, 'GET /api/echo', {}, { query: {}, context: { tenantId: TENANT } })).rejects.toThrow(/cannot be reproduced/);
   });
+
+  it('compiles array length, indexed access in counted loops, and List.get bounds', async () => {
+    const artifact = await compileJava({ ...SOURCES, 'demo/orders/PayloadController.java': `
+package demo.orders;
+import demo.kernel.RequestContextHolder;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.UUID;
+import org.springframework.web.bind.annotation.*;
+import reactor.core.publisher.Mono;
+@RestController
+@RequestMapping("/api/orders")
+public class PayloadController {
+  private final LinePort lines;
+  public PayloadController(LinePort lines) { this.lines = lines; }
+  @GetMapping("/{orderId}/payload") public Mono<Map<String, Object>> payload(@PathVariable UUID orderId, @RequestParam String text) {
+    return Mono.just(entries("order", orderId, "text", text));
+  }
+  @GetMapping("/{orderId}/second") public Mono<String> second(@PathVariable UUID orderId) {
+    return RequestContextHolder.getRequiredContext().flatMap(ctx -> lines.forOrder(ctx.tenantId(), orderId).collectList())
+        .map(items -> items.get(1).label());
+  }
+  private Map<String, Object> entries(Object... values) {
+    Map<String, Object> payload = new LinkedHashMap<>();
+    for (int i = 0; i < values.length; i += 2) payload.put(values[i].toString(), values[i + 1]);
+    return payload;
+  }
+}
+` });
+    const payload = endpoint(artifact, 'GET /api/orders/{orderId}/payload');
+    expect(payload.offlineClass, payload.reasons.join('; ')).toBe('LOCAL_READ_SAFE');
+    expect((await run(artifact, 'GET /api/orders/{orderId}/payload', {}, { params: { orderId: ORDER }, query: { text: 'hi' }, context: { tenantId: TENANT } })).body)
+      .toEqual({ order: ORDER, text: 'hi' });
+    const second = endpoint(artifact, 'GET /api/orders/{orderId}/second');
+    expect(second.offlineClass, second.reasons.join('; ')).toBe('LOCAL_READ_SAFE');
+    const rows = { 'demo.orders.LineEntity': [line(1, 'a', 1, 'GOODS'), line(2, 'b', 1, 'GOODS')] };
+    expect((await run(artifact, 'GET /api/orders/{orderId}/second', rows, { params: { orderId: ORDER }, context: { tenantId: TENANT } })).body).toBe('b');
+    expect(await run(artifact, 'GET /api/orders/{orderId}/second', { 'demo.orders.LineEntity': [line(1, 'a', 1, 'GOODS')] }, { params: { orderId: ORDER }, context: { tenantId: TENANT } }))
+      .toMatchObject({ status: 500, code: 'LIST_INDEX' });
+  });
 });

@@ -892,6 +892,10 @@ export class Evaluator {
           const item = array.items[index.e.v];
           if (item !== undefined) return item;
         }
+        if (array.t === 'list' && index.t === 'pure') return array.element(op('at', array.e, index.e, lit('array')));
+        if (array.t === 'pure' && array.jt.array > 0 && index.t === 'pure') {
+          return this.view(op('at', array.e, index.e, lit('array')), { ...array.jt, array: array.jt.array - 1 });
+        }
         this.fail('Array access is not supported', node, scope);
       }
       case 'array_creation_expression': {
@@ -1145,6 +1149,8 @@ export class Evaluator {
       this.fail(`Unknown static member ${target.fqn}.${name}`, node, scope);
     }
     if (target.t === 'obj') return this.readField(target, name);
+    // array.length (arrays are lists; a null array dereference fails like Java).
+    if (name === 'length' && (target.t === 'list' || (target.t === 'pure' && target.jt.array > 0))) return pure(op('size', target.e), T.int);
     if (target.t === 'pure') {
       const decl = this.project.type(target.jt.name);
       if (decl?.kind === 'enum') {

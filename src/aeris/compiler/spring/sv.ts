@@ -49,6 +49,12 @@ export const op = (name: Extract<Expr, { k: 'op' }>['op'], ...args: Expr[]): Exp
     }
   }
   if (name === 'coalesce' && a !== undefined && a.k === 'lit' && a.v !== null) return a;
+  // Literal lists (varargs, List.of): their size and constant-index elements are known.
+  if (name === 'size' && a !== undefined && a.k === 'list') return lit(a.items.length);
+  if (name === 'at' && a !== undefined && a.k === 'list' && b !== undefined && b.k === 'lit' && typeof b.v === 'number') {
+    const item = a.items[b.v];
+    if (item !== undefined) return item;
+  }
   return { k: 'op', op: name, args };
 };
 const sizes = new WeakMap<object, number>();

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { AerisHttpError, Executor, type ExecutionRequest } from '../../../src/aeris/runtime/executor.js';
 import { MemoryStore } from '../../../src/aeris/runtime/store/MemoryStore.js';
-import { decimalAdd, decimalMul, decimalSub, formatNow } from '../../../src/aeris/runtime/values.js';
+import { decimalAdd, decimalDividePrecision, decimalMul, decimalRound, decimalSub, formatNow } from '../../../src/aeris/runtime/values.js';
 import { ENTITY, ORG, OTHER_ORG, endpoints, projection } from './fixtures.js';
 
 const ID = '33333333-3333-4333-8333-333333333333';
@@ -96,6 +96,23 @@ describe('value semantics', () => {
     expect(decimalAdd(0.1, 0.2)).toBe(0.3);
     expect(decimalSub(1.1, 0.1)).toBe(1);
     expect(decimalMul(19.99, 3)).toBe(59.97);
+  });
+
+  it('rounds to a MathContext precision like BigDecimal', () => {
+    expect(decimalDividePrecision(1, 3, 16, 'HALF_EVEN')).toBe(0.3333333333333333);
+    expect(decimalDividePrecision(2, 3, 16, 'HALF_EVEN')).toBe(0.6666666666666667);
+    expect(decimalDividePrecision(10, 4, 16, 'HALF_EVEN')).toBe(2.5);
+    expect(decimalDividePrecision(22, 7, 7, 'HALF_EVEN')).toBe(3.142857);
+    expect(decimalDividePrecision(-2, 3, 7, 'HALF_EVEN')).toBe(-0.6666667);
+    expect(decimalDividePrecision(1e-10, 3, 16, 'HALF_EVEN')).toBe(3.333333333333333e-11);
+    expect(decimalDividePrecision(123456, 1, 2, 'HALF_UP')).toBe(120000);
+    expect(decimalDividePrecision(1, 8, 0, 'HALF_UP')).toBe(0.125);
+    expect(() => decimalDividePrecision(1, 3, 0, 'HALF_UP')).toThrow(/Non-terminating/);
+    expect(() => decimalDividePrecision(1, 0, 16, 'HALF_EVEN')).toThrow(/zero/);
+    expect(decimalRound(1234.5678, 6, 'HALF_UP')).toBe(1234.57);
+    expect(decimalRound(99.95, 3, 'HALF_EVEN')).toBe(100);
+    expect(decimalRound(125, 2, 'HALF_EVEN')).toBe(120);
+    expect(decimalRound(135, 2, 'HALF_EVEN')).toBe(140);
   });
 
   it('formats the captured clock like Jackson java.time serializers', () => {

@@ -286,6 +286,59 @@ export function decimalSetScale(value: number, scale: number, mode: RoundingMode
   return fromScaled({ units: roundQuotient(scaled.units, divisor, mode), scale });
 }
 
+function digitCount(units: bigint): number {
+  return (units < 0n ? -units : units).toString().length;
+}
+
+/** A value units * 10^-scale, for any sign of scale. */
+function fromAnyScale(units: bigint, scale: number): number {
+  return scale >= 0 ? fromScaled({ units, scale }) : fromScaled({ units: units * 10n ** BigInt(-scale), scale: 0 });
+}
+
+/** BigDecimal.round(new MathContext(precision, mode)); precision 0 means unlimited. */
+export function decimalRound(value: number, precision: number, mode: RoundingMode): number {
+  const scaled = toScaled(value);
+  const digits = digitCount(scaled.units);
+  if (precision === 0 || scaled.units === 0n || digits <= precision) return value;
+  const drop = digits - precision;
+  return fromAnyScale(roundQuotient(scaled.units, 10n ** BigInt(drop), mode), scaled.scale - drop);
+}
+
+/** BigDecimal.divide(divisor, new MathContext(precision, mode)): the quotient rounded to `precision` significant digits. */
+export function decimalDividePrecision(dividend: number, divisor: number, precision: number, mode: RoundingMode): number {
+  const a = toScaled(dividend);
+  const b = toScaled(divisor);
+  if (b.units === 0n) throw new AerisValueError(a.units === 0n ? 'Division undefined' : 'Division by zero');
+  // dividend / divisor = numerator / denominator, both integers.
+  const numerator = a.units * 10n ** BigInt(b.scale);
+  const denominator = b.units * 10n ** BigInt(a.scale);
+  if (numerator === 0n) return 0;
+  if (precision === 0) {
+    // MathContext.UNLIMITED: exact, or ArithmeticException for a non-terminating expansion.
+    const gcd = (x: bigint, y: bigint): bigint => (y === 0n ? (x < 0n ? -x : x) : gcd(y, x % y));
+    let rest = denominator / gcd(numerator, denominator);
+    if (rest < 0n) rest = -rest;
+    let twos = 0;
+    let fives = 0;
+    while (rest % 2n === 0n) { rest /= 2n; twos += 1; }
+    while (rest % 5n === 0n) { rest /= 5n; fives += 1; }
+    if (rest !== 1n) throw new AerisValueError('Non-terminating decimal expansion; no exact representable decimal result.');
+    const scale = Math.max(twos, fives);
+    return fromScaled({ units: roundQuotient(numerator * 10n ** BigInt(scale), denominator, 'UNNECESSARY'), scale });
+  }
+  const magnitude = (x: bigint) => (x < 0n ? -x : x);
+  // exponent = floor(log10(|numerator / denominator|))
+  let exponent = digitCount(numerator) - digitCount(denominator);
+  const n = magnitude(numerator);
+  const d = magnitude(denominator);
+  if (exponent >= 0 ? n < d * 10n ** BigInt(exponent) : n * 10n ** BigInt(-exponent) < d) exponent -= 1;
+  const scale = precision - 1 - exponent;
+  const units = scale >= 0
+    ? roundQuotient(numerator * 10n ** BigInt(scale), denominator, mode)
+    : roundQuotient(numerator, denominator * 10n ** BigInt(-scale), mode);
+  return fromAnyScale(units, scale);
+}
+
 /** BigDecimal.divide(divisor, scale, mode). */
 export function decimalDivide(dividend: number, divisor: number, scale: number, mode: RoundingMode): number {
   const a = toScaled(dividend);

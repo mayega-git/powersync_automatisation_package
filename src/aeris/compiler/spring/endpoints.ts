@@ -92,6 +92,8 @@ const RUNTIME_FAILURES: Readonly<Record<string, { cls: string; status?: number }
   INVALID_BODY: { cls: 'org.springframework.web.server.ServerWebInputException', status: 400 },
   INVALID_VALUE: { cls: 'org.springframework.web.server.ServerWebInputException', status: 400 },
   ACCESS_DENIED: { cls: 'org.springframework.security.access.AccessDeniedException', status: 403 },
+  ARRAY_INDEX: { cls: 'java.lang.ArrayIndexOutOfBoundsException' },
+  LIST_INDEX: { cls: 'java.lang.IndexOutOfBoundsException' },
 };
 
 function runtimeErrors(evaluator: Evaluator): { runtimeErrors?: Record<string, ErrorSpec>; opaqueFailures?: string[] } {

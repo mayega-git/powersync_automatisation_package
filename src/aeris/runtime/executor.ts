@@ -15,6 +15,8 @@ import {
   decimalAdd,
   decimalMul,
   decimalDivide,
+  decimalDividePrecision,
+  decimalRound,
   decimalSetScale,
   decimalSub,
   formatNow,
@@ -638,6 +640,16 @@ class Frame {
       case 'size':
         if (!Array.isArray(a)) throw new AerisHttpError(500, 'NULL_DEREFERENCE', 'size() of a non-list value.');
         return a.length;
+      case 'at': {
+        // array[i] / list.get(i): the third argument says which Java exception an out-of-range index raises.
+        if (!Array.isArray(a)) throw new AerisHttpError(500, 'NULL_DEREFERENCE', 'Indexing a non-list value.');
+        const index = num(b);
+        if (!Number.isInteger(index) || index < 0 || index >= a.length) {
+          const kind = values[2] === 'array' ? 'ARRAY_INDEX' : 'LIST_INDEX';
+          throw new AerisHttpError(500, kind, `Index ${index} out of bounds for length ${a.length}`, undefined, kind);
+        }
+        return a[index]!;
+      }
       case 'range': {
         // for (int i = a; i < b; i++): bounded, a runaway loop is a program error, not a hang.
         const start = num(a);
@@ -676,6 +688,17 @@ class Frame {
         const mode = str(values[2] ?? null) as RoundingMode;
         try {
           return decimalSetScale(num(a), num(b), mode);
+        } catch (error) {
+          throw new AerisHttpError(500, 'ARITHMETIC', (error as Error).message);
+        }
+      }
+      case 'divideP':
+      case 'roundP': {
+        // MathContext arithmetic: [value, divisor?, precision, mode].
+        const precision = num(expr.op === 'divideP' ? values[2] ?? null : b);
+        const mode = str((expr.op === 'divideP' ? values[3] : values[2]) ?? null) as RoundingMode;
+        try {
+          return expr.op === 'divideP' ? decimalDividePrecision(num(a), num(b), precision, mode) : decimalRound(num(a), precision, mode);
         } catch (error) {
           throw new AerisHttpError(500, 'ARITHMETIC', (error as Error).message);
         }

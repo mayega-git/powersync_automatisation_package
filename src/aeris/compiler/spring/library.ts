@@ -69,6 +69,15 @@ function listOf(ev: Evaluator, items: SV[], elem: JType): ListSV {
 }
 
 /** Static fields of library types (HttpStatus.X, BigDecimal.ZERO, Boolean.TRUE...). */
+/** java.math.MathContext values are compile-time constants "mc:<precision>:<mode>". */
+const MATH_CONTEXT: JType = { name: 'java.math.MathContext', args: [], array: 0 };
+
+function mathContext(sv: SV | undefined): { precision: number; mode: string } | undefined {
+  if (sv?.t !== 'pure' || sv.e.k !== 'lit' || typeof sv.e.v !== 'string') return undefined;
+  const match = /^mc:(\d+):([A-Z_]+)$/.exec(sv.e.v);
+  return match === null ? undefined : { precision: Number(match[1]), mode: match[2]! };
+}
+
 export function libraryStaticField(fqn: string, name: string): SV | undefined {
   switch (simple(fqn)) {
     case 'HttpStatus':
@@ -89,6 +98,10 @@ export function libraryStaticField(fqn: string, name: string): SV | undefined {
       return undefined;
     case 'StringUtils':
       return name === 'EMPTY' ? pure(lit(''), T.string) : undefined;
+    case 'MathContext': {
+      const contexts: Record<string, string> = { DECIMAL32: 'mc:7:HALF_EVEN', DECIMAL64: 'mc:16:HALF_EVEN', DECIMAL128: 'mc:34:HALF_EVEN', UNLIMITED: 'mc:0:HALF_UP' };
+      return contexts[name] === undefined ? undefined : pure(lit(contexts[name]!), MATH_CONTEXT);
+    }
     case 'RoundingMode':
       return ['UP', 'DOWN', 'CEILING', 'FLOOR', 'HALF_UP', 'HALF_DOWN', 'HALF_EVEN', 'UNNECESSARY'].includes(name)
         ? pure(lit(name), { name: 'java.math.RoundingMode', args: [], array: 0 })
@@ -106,6 +119,15 @@ export function libraryStatic(ev: Evaluator, fqn: string, name: string, args: SV
   const type = simple(fqn);
   const arg = (index: number, what = `${type}.${name}`) => scalar(args[index], what, node);
   switch (type) {
+    case 'MathContext':
+      if (name === '<init>' && (args.length === 1 || args.length === 2)) {
+        const precision = args[0]!.t === 'pure' && args[0].e.k === 'lit' ? args[0].e.v : undefined;
+        const mode = args.length === 2 ? (args[1]!.t === 'pure' && args[1].e.k === 'lit' ? args[1].e.v : undefined) : 'HALF_UP';
+        if (typeof precision === 'number' && Number.isInteger(precision) && precision >= 0 && typeof mode === 'string') {
+          return pure(lit(`mc:${precision}:${mode}`), MATH_CONTEXT);
+        }
+      }
+      break;
     case 'Mono':
       return monoStatic(ev, name, args, node, scope);
     case 'Flux':
@@ -502,6 +524,8 @@ export function libraryInstance(ev: Evaluator, receiver: SV, name: string, args:
 
 function valueMethod(ev: Evaluator, receiver: SV & { t: 'pure' }, name: string, args: SV[], node: SyntaxNode): SV {
   const self = receiver.e;
+  // A constant string seen through a wider static type (Object varargs): String.toString() is the identity.
+  if (name === 'toString' && args.length === 0 && self.k === 'lit' && typeof self.v === 'string') return pure(self, T.string);
   const arg = (index: number) => scalar(args[index], `${name}()`, node);
   const type = receiver.jt.name;
   if (name === 'equals' && args.length === 1) {
@@ -566,6 +590,20 @@ function valueMethod(ev: Evaluator, receiver: SV & { t: 'pure' }, name: string, 
         case 'stripTrailingZeros/0': return receiver;
         case 'setScale/2': return pure(op('setScale', self, arg(0), arg(1)), decimal);
         case 'divide/3': return pure(op('divide', self, arg(0), arg(1), arg(2)), decimal);
+        case 'divide/2':
+        case 'multiply/2':
+        case 'add/2':
+        case 'subtract/2':
+        case 'round/1': {
+          const mc = mathContext(args.at(-1));
+          if (mc === undefined) break;
+          const precision = lit(mc.precision);
+          const mode = lit(mc.mode);
+          if (name === 'divide') return pure(op('divideP', self, arg(0), precision, mode), decimal);
+          if (name === 'round') return pure(op('roundP', self, precision, mode), decimal);
+          const exact = op(name === 'multiply' ? 'mul' : name === 'add' ? 'add' : 'sub', self, arg(0));
+          return pure(op('roundP', exact, precision, mode), decimal);
+        }
         case 'min/1': return pure(op('min', self, arg(0)), decimal);
         case 'compareTo/1': return pure(cond(op('lt', self, arg(0)), lit(-1), cond(op('gt', self, arg(0)), lit(1), lit(0))), T.int);
         case 'signum/0': return pure(cond(op('lt', self, lit(0)), lit(-1), cond(op('gt', self, lit(0)), lit(1), lit(0))), T.int);
@@ -644,6 +682,8 @@ function listMethod(ev: Evaluator, receiver: ListSV, name: string, args: SV[], n
       }, node, scope);
       return { t: 'void' };
     }
+    case 'get/1':
+      return element(op('at', receiver.e, scalar(args[0], 'get()', node), lit('list')));
     case 'reduce/2': {
       // stream.reduce(identity, accumulator): a left fold, the accumulator must be a pure function.
       const identity = args[0]!;
