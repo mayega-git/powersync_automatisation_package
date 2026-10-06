@@ -65,8 +65,10 @@ export interface QueryGuard {
  * of the first instruction that looks at the row (a 404 guard). A row looked
  * at before such a guard counts as unguarded.
  */
-export function queryGuards(program: readonly Instr[]): QueryGuard[] {
+export function queryGuards(program: readonly Instr[], keys?: ReadonlyMap<string, string>): QueryGuard[] {
   const out: QueryGuard[] = [];
+  // Single-row reads, so a later re-read of the same row by key inherits their proof.
+  const rows = new Map<string, { entity: string; pairs: Set<ScopePair> }>();
   const visit = (block: readonly Instr[]) => {
     block.forEach((instr, index) => {
       if (instr.op === 'IF') {
@@ -88,6 +90,15 @@ export function queryGuards(program: readonly Instr[]): QueryGuard[] {
       if (instr.mode === 'one') {
         const guard = firstUse(block.slice(index + 1), instr.out);
         if (guard !== undefined) for (const pair of impliedPairs(guard, instr.out)) pairs.add(pair);
+        // `key = earlier.key` with `earlier` a single-row read of the same entity: the same row, already proven.
+        const [filter] = instr.where;
+        const key = keys?.get(instr.entity);
+        if (instr.where.length === 1 && filter !== undefined && key !== undefined && filter.field === key && filter.cmp === 'eq'
+          && filter.value?.k === 'get' && filter.value.field === key && filter.value.of.k === 'var') {
+          const earlier = rows.get(filter.value.of.name);
+          if (earlier?.entity === instr.entity) for (const pair of earlier.pairs) pairs.add(pair);
+        }
+        rows.set(instr.out, { entity: instr.entity, pairs });
       }
       out.push({ entity: instr.entity, pairs });
     });

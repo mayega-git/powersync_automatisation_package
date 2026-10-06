@@ -30,6 +30,8 @@ const LIBRARY_HIERARCHY: Readonly<Record<string, string>> = {
   'org.springframework.dao.DataIntegrityViolationException': 'org.springframework.dao.NonTransientDataAccessException',
   'org.springframework.dao.NonTransientDataAccessException': 'org.springframework.dao.DataAccessException',
   'org.springframework.dao.TransientDataAccessResourceException': 'org.springframework.dao.TransientDataAccessException',
+  'org.springframework.dao.OptimisticLockingFailureException': 'org.springframework.dao.ConcurrencyFailureException',
+  'org.springframework.dao.ConcurrencyFailureException': 'org.springframework.dao.TransientDataAccessException',
   'org.springframework.dao.TransientDataAccessException': 'org.springframework.dao.DataAccessException',
   'org.springframework.dao.DataAccessException': 'org.springframework.core.NestedRuntimeException',
   'java.lang.RuntimeException': 'java.lang.Exception',

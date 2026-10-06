@@ -165,7 +165,7 @@ function inferScopes(drafts: readonly EndpointDraft[], entities: ReadonlyMap<str
     const guardSets: Set<ScopePair>[] = [];
     const inserted = new Set<ScopePair>();
     for (const draft of drafts) {
-      for (const guard of queryGuards(draft.program!)) if (guard.entity === entity.fqn) guardSets.push(guard.pairs);
+      for (const guard of queryGuards(draft.program!, keysOf(entities))) if (guard.entity === entity.fqn) guardSets.push(guard.pairs);
       for (const pair of insertedPairs(draft.program!, entity.fqn)) inserted.add(pair);
     }
     let chosen: ScopePair[];
@@ -259,7 +259,7 @@ function classify(draftIn: EndpointDraft, scopes: ReadonlyMap<string, EntityScop
       return offline('ONLINE_REQUIRED', [scope?.reason ?? `${entities.get(entity)?.decl.simple ?? entity} cannot be projected without leaking other sessions' data.`]);
     }
   }
-  for (const guard of queryGuards(program)) {
+  for (const guard of queryGuards(program, keysOf(entities))) {
     const scope = scopes.get(guard.entity)!;
     if (scope.public) continue;
     for (const [field, claim] of scope.filters) {
@@ -348,6 +348,18 @@ function serverCheckedWrites(draft: EndpointDraft, entities: ReadonlyMap<string,
   };
   visit(draft.program);
   return [...out].sort();
+}
+
+const keyMaps = new WeakMap<ReadonlyMap<string, EntityModel>, Map<string, string>>();
+
+/** Key property of each entity (memoized per entity map). */
+function keysOf(entities: ReadonlyMap<string, EntityModel>): Map<string, string> {
+  let keys = keyMaps.get(entities);
+  if (keys === undefined) {
+    keys = new Map([...entities.values()].map((entity) => [entity.fqn, entity.key]));
+    keyMaps.set(entities, keys);
+  }
+  return keys;
 }
 
 function containsQuery(program: readonly Instr[]): boolean {

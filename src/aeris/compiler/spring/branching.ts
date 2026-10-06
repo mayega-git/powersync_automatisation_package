@@ -106,11 +106,23 @@ export function branch<T>(
 ): T {
   if (isLit(test, true)) return onThen(block);
   if (isLit(test, false)) return onElse(block);
+  // Each side starts from the same object state; mutations are merged under the test afterwards.
+  const states = block.counters.objects;
+  const before = states?.snapshot();
   const left = attempt(block, onThen);
+  const leftState = states?.snapshot();
+  if (before !== undefined) states!.restore(before);
   const right = attempt(block, onElse);
+  const rightState = states?.snapshot();
   emitIf(block, test, left.instrs, right.instrs);
-  if (left.outcome.ok && right.outcome.ok) return merge(test, left.outcome.value, right.outcome.value);
-  if (left.outcome.ok) return left.outcome.value;
+  if (left.outcome.ok && right.outcome.ok) {
+    if (states !== undefined) states.merge(test, before!, leftState!, rightState!, block);
+    return merge(test, left.outcome.value, right.outcome.value);
+  }
+  if (left.outcome.ok) {
+    if (states !== undefined) states.restore(leftState!);
+    return left.outcome.value;
+  }
   if (right.outcome.ok) return right.outcome.value;
   throw new Diverged();
 }

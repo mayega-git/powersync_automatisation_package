@@ -438,6 +438,14 @@ export class Env {
 export interface Counters {
   vars: number;
   uuidSlots: number;
+  /** The evaluator's mutable objects, so control splits can isolate and merge their mutations. */
+  objects?: ObjectStates;
+}
+
+export interface ObjectStates {
+  snapshot(): Map<ObjSV, Map<string, SV>>;
+  restore(snapshot: Map<ObjSV, Map<string, SV>>): void;
+  merge(test: Expr, before: Map<ObjSV, Map<string, SV>>, left: Map<ObjSV, Map<string, SV>>, right: Map<ObjSV, Map<string, SV>>, block: Block): void;
 }
 
 /** Instructions emitted at one nesting level of the program. */

@@ -78,7 +78,15 @@ const THROWABLE = new Set(['java.lang.Throwable', 'java.lang.Exception', 'java.l
  * raises Unsupported: there is no approximation.
  */
 export class Evaluator {
-  readonly counters: Counters = { vars: 0, uuidSlots: 0 };
+  readonly counters: Counters = {
+    vars: 0,
+    uuidSlots: 0,
+    objects: {
+      snapshot: () => snapshotObjects(this.objects),
+      restore: (snapshot) => restoreObjects(snapshot),
+      merge: (test, before, left, right, block) => this.mergeObjectStates(test, before, left, right, block),
+    },
+  };
   readonly objects: ObjSV[] = [];
   readonly reads = new Set<string>();
   readonly writes = new Set<string>();
@@ -2013,6 +2021,7 @@ export class Evaluator {
           if (target.t !== 'obj') this.fail('delete() of a non-entity value', node, scope);
           return { t: 'mono', elem: T.void, run: (block) => {
             this.useEntity(entity, 'write');
+            if (entity.version !== undefined) this.versionGuard(entity, target, block, 'delete');
             block.emit({ op: 'DELETE', entity: entity.fqn, key: this.encode(this.readField(target, entity.key)) });
             this.record('database-write', repo.decl.node, repo.decl.file.path, `${repo.decl.simple}.delete`);
             return { value: VOID, empty: TRUE };
@@ -2132,7 +2141,6 @@ export class Evaluator {
   /** Spring Data save(): INSERT when the entity is new, UPDATE otherwise. */
   private save(entity: EntityModel, target: SV, node: SyntaxNode, scope: Scope): MonoSV {
     if (target.t !== 'obj' || target.cls !== entity.fqn) this.fail(`save() of ${describe(target)} instead of ${entity.decl.simple}`, node, scope);
-    if (entity.version !== undefined) this.fail(`Optimistic locking (@Version on ${entity.decl.simple}) is not modeled`, node, scope);
     return {
       t: 'mono',
       elem: { name: entity.fqn, args: [], array: 0 },
@@ -2152,10 +2160,38 @@ export class Evaluator {
       if (method === undefined) this.fail(`${entity.decl.simple} implements Persistable without an analyzable isNew()`, node, scope);
       return asBool(this.inline(method, target, [], node, scope), 'isNew()');
     }
-    const id = this.readField(target, entity.key);
-    if (id.t !== 'pure') this.fail('Entity id is not a scalar', node, scope);
-    const property = entity.properties.get(entity.key)!;
+    // Spring Data's default strategy: the version property when there is one, the id otherwise (0 for primitives).
+    const decisive = entity.version ?? entity.key;
+    const id = this.readField(target, decisive);
+    if (id.t !== 'pure') this.fail(`Entity ${decisive} is not a scalar`, node, scope);
+    const property = entity.properties.get(decisive)!;
     return property.jt.array === 0 && ['int', 'long', 'short'].includes(property.jt.name) ? op('eq', id.e, lit(0)) : op('isNull', id.e);
+  }
+
+  /** Whether the version property is a Java primitive (initial version 1 instead of 0). */
+  private primitiveVersion(entity: EntityModel): boolean {
+    const property = entity.properties.get(entity.version!)!;
+    return property.jt.array === 0 && ['int', 'long', 'short'].includes(property.jt.name);
+  }
+
+  /**
+   * @Version guard of R2dbcEntityTemplate.update/delete: the row must exist
+   * with the entity's version (IS NULL for a null version), otherwise
+   * OptimisticLockingFailureException. Returns the version the entity had.
+   */
+  private versionGuard(entity: EntityModel, target: ObjSV, block: Block, action: 'update' | 'delete'): Expr {
+    const version = this.readField(target, entity.version!);
+    if (version.t !== 'pure') throw new Unsupported(`Version of ${entity.decl.simple} is not a scalar`);
+    const id = this.encode(this.readField(target, entity.key));
+    const current = block.fresh(`${entity.decl.simple.toLowerCase()}_current`);
+    block.emit({ op: 'QUERY', out: current, entity: entity.fqn, mode: 'one', where: [{ field: entity.key, cmp: 'eq', value: id }] });
+    const stored = getf(vr(current), entity.version!);
+    const matches = cond(op('isNull', vr(current)), FALSE, cond(op('isNull', version.e), op('isNull', stored), op('eq', stored, version.e)));
+    const message = action === 'update'
+      ? op('concat', lit("Failed to update versioned entity with id '"), id, lit("' (version '"), version.e, lit(`') in table [${entity.table}]; Was the entity updated or deleted concurrently?`))
+      : op('concat', lit("Failed to delete versioned entity with id '"), id, lit("' (version "), version.e, lit(`) in table [${entity.table}]; Was the entity updated or deleted concurrently?`));
+    block.emit({ op: 'ASSERT', test: matches, error: this.errors.map({ t: 'exception', cls: 'org.springframework.dao.OptimisticLockingFailureException', message }) });
+    return version.e;
   }
 
   private insert(entity: EntityModel, target: ObjSV, block: Block, node: SyntaxNode, scope: Scope): void {
@@ -2167,6 +2203,11 @@ export class Evaluator {
       const slot = this.counters.uuidSlots;
       this.counters.uuidSlots += 1;
       target.fields.set(entity.key, pure({ k: 'uuid', slot }, property.jt));
+    }
+    if (entity.version !== undefined) {
+      // setVersionIfNecessary: the initial version is 1 for primitives, 0 otherwise.
+      const property = entity.properties.get(entity.version)!;
+      target.fields.set(entity.version, pure(lit(this.primitiveVersion(entity) ? 1 : 0), property.jt));
     }
     for (const property of entity.properties.values()) {
       if (entity.auditing.created.includes(property.name) || entity.auditing.modified.includes(property.name)) {
@@ -2180,6 +2221,12 @@ export class Evaluator {
   }
 
   private update(entity: EntityModel, target: ObjSV, block: Block): void {
+    if (entity.version !== undefined) {
+      // incrementVersion: old + 1 (1 when null), written only if the stored version still matches.
+      const previous = this.versionGuard(entity, target, block, 'update');
+      const property = entity.properties.get(entity.version)!;
+      target.fields.set(entity.version, pure(cond(op('isNull', previous), lit(1), op('add', previous, lit(1))), property.jt));
+    }
     const values: Record<string, Expr> = {};
     for (const property of entity.properties.values()) {
       if (property.name === entity.key) continue;
@@ -2276,7 +2323,6 @@ export class Evaluator {
       }
       case 'update/1': {
         const { entity, target } = this.entityOfObject(args[0], node, scope);
-        if (entity.version !== undefined) this.fail(`Optimistic locking on ${entity.decl.simple} is not modeled`, node, scope);
         return { t: 'mono', elem: { name: entity.fqn, args: [], array: 0 }, run: (block) => {
           this.useEntity(entity, 'write');
           this.record('database-write', entity.decl.node, entity.decl.file.path, `${entity.decl.simple}.update`);
@@ -2288,6 +2334,7 @@ export class Evaluator {
         const { entity, target } = this.entityOfObject(args[0], node, scope);
         return { t: 'mono', elem: { name: entity.fqn, args: [], array: 0 }, run: (block) => {
           this.useEntity(entity, 'write');
+          if (entity.version !== undefined) this.versionGuard(entity, target, block, 'delete');
           block.emit({ op: 'DELETE', entity: entity.fqn, key: this.encode(this.readField(target, entity.key)) });
           return { value: target, empty: FALSE };
         } };

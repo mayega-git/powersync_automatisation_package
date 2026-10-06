@@ -631,3 +631,76 @@ public class ProductLookupController {
     expect(await ask(2)).toEqual({ status: 500, body: null });
   });
 });
+
+describe('optimistic locking', () => {
+  it('reproduces @Version: initial version, increment, and stale-version failures', async () => {
+    const artifact = await compileJava({
+      'demo/stock/StockEntity.java': `
+package demo.stock;
+import java.util.UUID;
+import org.springframework.data.annotation.Id;
+import org.springframework.data.annotation.Version;
+import org.springframework.data.relational.core.mapping.Table;
+@Table(schema = "stock", name = "balance")
+public record StockEntity(@Id UUID id, UUID tenantId, int quantity, @Version Long version) {}
+`,
+      'demo/stock/StockRepository.java': `
+package demo.stock;
+import java.util.UUID;
+import org.springframework.data.repository.reactive.ReactiveCrudRepository;
+import reactor.core.publisher.Mono;
+public interface StockRepository extends ReactiveCrudRepository<StockEntity, UUID> {
+  Mono<StockEntity> findByIdAndTenantId(UUID id, UUID tenantId);
+}
+`,
+      'demo/stock/Conflicts.java': `
+package demo.stock;
+import java.util.Map;
+import org.springframework.dao.OptimisticLockingFailureException;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.web.bind.annotation.RestControllerAdvice;
+@RestControllerAdvice
+public class Conflicts {
+  @ExceptionHandler(OptimisticLockingFailureException.class)
+  public ResponseEntity<Map<String, Object>> conflict(OptimisticLockingFailureException exception) {
+    return ResponseEntity.status(HttpStatus.CONFLICT).body(Map.of("error", "STALE"));
+  }
+}
+`,
+      'demo/stock/StockController.java': `
+package demo.stock;
+import demo.kernel.RequestContextHolder;
+import java.util.UUID;
+import org.springframework.web.bind.annotation.*;
+import reactor.core.publisher.Mono;
+@RestController
+@RequestMapping("/api/stock")
+public class StockController {
+  private final StockRepository stocks;
+  public StockController(StockRepository stocks) { this.stocks = stocks; }
+  @PostMapping public Mono<StockEntity> create(@RequestParam int quantity) {
+    return RequestContextHolder.getRequiredContext().flatMap(ctx -> stocks.save(new StockEntity(null, ctx.tenantId(), quantity, null)));
+  }
+  @PutMapping("/{id}") public Mono<StockEntity> set(@PathVariable UUID id, @RequestParam int quantity, @RequestParam Long version) {
+    return RequestContextHolder.getRequiredContext().flatMap(ctx -> stocks.findByIdAndTenantId(id, ctx.tenantId()))
+        .flatMap(current -> stocks.save(new StockEntity(current.id(), current.tenantId(), quantity, version)));
+  }
+}
+`,
+    });
+    const create = endpoint(artifact, 'POST /api/stock');
+    expect(create.offlineClass, create.reasons.join('; ')).not.toBe('UNSUPPORTED');
+    const set = endpoint(artifact, 'PUT /api/stock/{id}');
+    expect(set.offlineClass, set.reasons.join('; ')).not.toBe('UNSUPPORTED');
+    const STOCK = '44444444-4444-4444-8444-444444444444';
+    const rows = { 'demo.stock.StockEntity': [{ id: STOCK, tenantId: TENANT, quantity: 5, version: 3 }] };
+    const created = await run(artifact, 'POST /api/stock', {}, { query: { quantity: '2' }, context: { tenantId: TENANT } });
+    expect(created).toMatchObject({ status: 200, body: { quantity: 2, version: 0 } });
+    const updated = await run(artifact, 'PUT /api/stock/{id}', rows, { params: { id: STOCK }, query: { quantity: '9', version: '3' }, context: { tenantId: TENANT } });
+    expect(updated).toMatchObject({ status: 200, body: { id: STOCK, quantity: 9, version: 4 } });
+    const stale = await run(artifact, 'PUT /api/stock/{id}', rows, { params: { id: STOCK }, query: { quantity: '9', version: '2' }, context: { tenantId: TENANT } });
+    expect(stale).toEqual({ status: 409, body: { error: 'STALE' }, code: expect.any(String) });
+  });
+});
