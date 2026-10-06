@@ -1,0 +1,5 @@
+spring:
+  profiles:
+    active: r2dbc
+  r2dbc:
+    url: r2dbc:postgresql://localhost:5432/taskly

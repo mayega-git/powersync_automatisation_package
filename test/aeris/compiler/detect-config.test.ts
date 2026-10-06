@@ -46,11 +46,22 @@ public interface ActivityAuditPort {
 }
 `;
 
+/** Says nothing in its name; only the verb betrays the bookkeeping. */
+const QUIET_BOOKKEEPING = `
+package acme.platform;
+import reactor.core.publisher.Mono;
+public interface Chronicle {
+  Mono<Void> recordChange(String what);
+  Mono<Void> rebuildEverything();
+}
+`;
+
 const FILES = [
   { path: 'acme/platform/Caller.java', content: SESSION },
   { path: 'acme/platform/CallTrace.java', content: TELEMETRY },
   { path: 'acme/platform/CallScope.java', content: HOLDER },
   { path: 'acme/platform/ActivityAuditPort.java', content: BOOKKEEPING },
+  { path: 'acme/platform/Chronicle.java', content: QUIET_BOOKKEEPING },
 ];
 
 const detect = () => detectConfig('/nonexistent-root', FILES);
@@ -84,5 +95,21 @@ describe('aeris init on an unfamiliar backend', () => {
   it('never proposes a method that answers something', async () => {
     const { yaml } = await detect();
     expect(yaml).not.toContain('ActivityAuditPort.lastAction');
+  });
+
+  it('spots bookkeeping by the verb when the class name says nothing', async () => {
+    const { yaml } = await detect();
+    expect(yaml).toContain('#   - Chronicle.recordChange');
+    expect(yaml).not.toContain('Chronicle.rebuildEverything');
+  });
+
+  it('takes the scope claims from the session record, not from a fixed vocabulary', async () => {
+    const { yaml } = await detect();
+    expect(yaml).toContain('workspaceId:');
+    expect(yaml).toContain('memberId:');
+    // `locale` is not an identifier, and nothing invents tenants here.
+    expect(yaml).not.toContain('locale:');
+    expect(yaml).not.toContain('tenantId:');
+    expect(yaml).not.toContain('organizationId:');
   });
 });

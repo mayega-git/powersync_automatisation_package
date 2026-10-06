@@ -53,10 +53,15 @@ export async function detectConfig(rootDir: string, files: readonly SourceFile[]
   // Bookkeeping candidates, proposed commented out and never enabled: a method
   // returning nothing is not necessarily inert (`deleteAll()` returns Mono<Void>
   // too), so each one is a decision the reader makes, not the detector.
+  // Either the class or the method may carry the intent: `AuditService.save`
+  // and `ActivityLog.record` are the same thing under two vocabularies.
+  const bookkeeping = /audit|telemetry|metric|analytic|tracking|outbox|activity|journal|history|eventpublisher/i;
+  const bookkeepingVerb = /^(record|log|audit|track|trace|publish|emit|notify|report|append|register)[A-Z]?/;
   const inertCandidates: string[] = [];
   for (const type of project.types.values()) {
-    if (!/audit|telemetry|metric|analytic|tracking|outbox|eventpublisher/i.test(type.simple.replace(/[^a-z]/gi, ''))) continue;
+    const named = bookkeeping.test(type.simple.replace(/[^a-z]/gi, ''));
     for (const method of type.methods) {
+      if (!named && !bookkeepingVerb.test(method.name)) continue;
       const returned = method.returnType;
       const payload = returned.args[0];
       const voidResult = returned.name === 'void'
@@ -67,15 +72,36 @@ export async function detectConfig(rootDir: string, files: readonly SourceFile[]
   if (inertCandidates.length > 0) {
     notes.push(`${inertCandidates.length} method(s) look like server-side bookkeeping and are proposed commented out under inertEffects: enable only those whose sole effect the server redoes when the operation is replayed.`);
   }
+  // The claims that can restrict a row are the session's own identifiers, read
+  // off the record the holder returns — not a vocabulary decided in advance.
+  const scopeClaims: Record<string, string[]> = {};
+  for (const source of sources) {
+    if (source.kind === 'metadata') continue;
+    const record = project.type(source.type);
+    if (record === undefined) continue;
+    for (const component of record.kind === 'record' ? record.recordComponents : record.fields) {
+      if (component.type.name === 'java.util.UUID') scopeClaims[component.name] = [component.name];
+    }
+  }
+  if (Object.keys(scopeClaims).length === 0) notes.push('No session identifier found: fill scopeClaims with the entity properties that restrict a row to a session.');
+
   const authentication = [...project.types.values()].find((type) =>
     type.kind === 'class' && type.superclass !== undefined && /AbstractAuthenticationToken$/.test(type.superclass.name));
   const idempotencyFilter = files.find((file) => /implements\s+WebFilter/.test(file.content) && /Idempotency-Key/.test(file.content));
   if (idempotencyFilter !== undefined) notes.push(`Idempotency filter detected in ${idempotencyFilter.path}: check the covered methods and paths.`);
   else notes.push('No Idempotency-Key filter found: creations (POST) will stay online-only until the backend deduplicates replays.');
   let profiles: string[] = [];
-  for (const candidate of ['src/main/resources/application.yml', 'src/main/resources/application.yaml']) {
-    const found = files.find((file) => file.path.endsWith('Application.java'));
-    const base = found === undefined ? rootDir : join(rootDir, found.path.split('/src/main/')[0] ?? '');
+  // Every module root the sources reveal, so a single-module project (`src/main/java/...`)
+  // is found as readily as one module of a multi-module build (`service-a/src/main/java/...`).
+  const moduleRoots = new Set<string>();
+  for (const file of files) {
+    const marker = file.path.indexOf('src/main/java/');
+    if (marker >= 0) moduleRoots.add(file.path.slice(0, marker));
+  }
+  if (moduleRoots.size === 0) moduleRoots.add('');
+  for (const candidate of [...moduleRoots].flatMap((module) =>
+    ['src/main/resources/application.yml', 'src/main/resources/application.yaml'].map((name) => join(module, name)))) {
+    const base = rootDir;
     try {
       const document = yaml.load(await readFile(join(base, candidate), 'utf8')) as { spring?: { profiles?: { active?: string } } } | undefined;
       const active = document?.spring?.profiles?.active;
@@ -92,7 +118,7 @@ export async function detectConfig(rootDir: string, files: readonly SourceFile[]
       ...(authentication === undefined ? {} : { authentication: authentication.fqn }),
     },
     ...(idempotencyFilter === undefined ? {} : { idempotency: { header: 'Idempotency-Key', methods: ['POST', 'PUT', 'PATCH', 'DELETE'], paths: ['/api/**'] } }),
-    scopeClaims: { tenantId: ['tenantId'], organizationId: ['organizationId'] },
+    scopeClaims,
     publicEntities: [],
     onlineOnly: [],
   };
