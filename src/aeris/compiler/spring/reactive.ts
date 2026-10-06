@@ -5,6 +5,7 @@ import { attempt, branch, mergeEmission, pureValue, restoreObjects, snapshotObje
 import { sortExpr } from './library.js';
 import type { Evaluator, Scope } from './evaluator.js';
 import {
+  and,
   cond,
   FALSE,
   getf,
@@ -48,6 +49,42 @@ function fallible(instrs: readonly Instr[]): boolean {
     if (instr.op === 'EACH') return true;
     return true;
   });
+}
+
+/**
+ * Runs a per-element function returning a Mono on a symbolic element. The
+ * caller either uses the result directly (no instructions) or emits one
+ * read-only EACH collecting the given fields per element.
+ */
+function perElement(ev: Evaluator, block: Block, list: Expr, element: (item: Expr) => SV, apply: (item: SV, child: Block) => Emission, node: SyntaxNode, what: string) {
+  const as = block.fresh('it');
+  const before = snapshotObjects(ev.objects);
+  const probe = attempt(block, (child) => apply(element(vr(as)), child));
+  const mutated = [...before].some(([target, fields]) => [...target.fields].some(([key, value]) => fields.get(key) !== value));
+  restoreObjects(before);
+  if (mutated) throw new Unsupported(`${what} mutates shared objects per element`, node);
+  if (!probe.outcome.ok) throw new Unsupported(`${what} fails for every element`, node);
+  const instrs = probe.instrs;
+  return {
+    as,
+    emission: probe.outcome.value,
+    instrs,
+    emit: (fields: Record<string, Expr>): string => {
+      if (!readOnly(instrs)) throw new Unsupported(`${what} writes per element`, node);
+      const out = block.fresh('each');
+      block.emit({ op: 'EACH', of: list, as, body: instrs, yield: { k: 'object', fields }, out });
+      return out;
+    },
+  };
+}
+
+/** Applies a function returning a Mono and runs it. */
+function applyMono(ev: Evaluator, fn: SV, node: SyntaxNode, scope: Scope, what: string): (item: SV, child: Block) => Emission {
+  return (item, child) => {
+    const inner = ev.apply(fn, [item], child, node, scope);
+    if (inner.t !== 'mono') throw new Unsupported(`${what} function does not return a Mono`, node);
+    return inner.run(child);
+  };
 }
 
 function mono(elem: JType, run: (block: Block) => Emission): MonoSV {
@@ -416,7 +453,18 @@ function fluxCall(ev: Evaluator, source: FluxSV, name: string, args: SV[], node:
         run: (block) => {
           const { list, element } = source.run(block);
           const as = block.fresh('it');
-          const mapped = mapElements(ev, fn!, list, as, element(vr(as)), block, node, scope, 'Flux.map()');
+          let mapped: SV;
+          try {
+            mapped = mapElements(ev, fn!, list, as, element(vr(as)), block, node, scope, 'Flux.map()');
+          } catch (error) {
+            if (!(error instanceof Unsupported) || !/side effects per element/.test(error.reason)) throw error;
+            // The mapper reads data or binds values: one read-only EACH computing it per element, in order.
+            const each = perElement(ev, block, list, element, (item, child) => ({ value: ev.apply(fn!, [item], child, node, scope), empty: FALSE }), node, 'Flux.map()');
+            const jt = elemOf(each.emission.value);
+            const out = each.emit({ value: ev.encode(each.emission.value) });
+            const item = block.fresh('it');
+            return { list: { k: 'map', of: vr(out), as: item, body: getf(vr(item), 'value') }, element: (value: Expr) => ev.view(value, jt) };
+          }
           const body = ev.encode(mapped);
           const jt = elemOf(mapped);
           return { list: { k: 'map', of: list, as, body }, element: (item: Expr) => ev.view(item, jt) };
@@ -430,37 +478,39 @@ function fluxCall(ev: Evaluator, source: FluxSV, name: string, args: SV[], node:
         elem: T.object,
         run: (block) => {
           const { list, element } = source.run(block);
-          const as = block.fresh('it');
-          const before = snapshotObjects(ev.objects);
-          const probe = attempt(block, (child) => {
-            const inner = ev.apply(fn!, [element(vr(as))], child, node, scope);
-            if (inner.t !== 'mono') throw new Unsupported(`Flux.${name}() mapper is not a Mono`, node);
-            return inner.run(child);
-          });
-          const mutated = [...before].some(([target, fields]) => [...target.fields].some(([key, value]) => fields.get(key) !== value));
-          restoreObjects(before);
-          if (mutated) throw new Unsupported(`Flux.${name}() mutates shared objects per element`, node);
-          if (!probe.outcome.ok) throw new Unsupported(`Flux.${name}() fails for every element`, node);
-          const emission = probe.outcome.value;
+          const each = perElement(ev, block, list, element, applyMono(ev, fn!, node, scope, `Flux.${name}()`), node, `Flux.${name}()`);
+          const { emission, as } = each;
           const jt = elemOf(emission.value);
-          if (probe.instrs.length === 0 && isLit(emission.empty, false)) {
+          if (each.instrs.length === 0 && isLit(emission.empty, false)) {
             return { list: { k: 'map', of: list, as, body: ev.encode(emission.value) }, element: (item: Expr) => ev.view(item, jt) };
           }
-          if (!readOnly(probe.instrs)) throw new Unsupported(`Flux.${name}() writes per element`, node);
           // Per-element lookups: one EACH; empty inner results contribute nothing (Reactor flattening).
-          const out = block.fresh('each');
-          block.emit({
-            op: 'EACH',
-            of: list,
-            as,
-            body: probe.instrs,
-            yield: { k: 'object', fields: { empty: emission.empty, value: cond(emission.empty, NULL, ev.encode(emission.value)) } },
-            out,
-          });
+          const out = each.emit({ empty: emission.empty, value: cond(emission.empty, NULL, ev.encode(emission.value)) });
           const kept = block.fresh('it');
           const present: Expr = { k: 'filter', of: vr(out), as: kept, body: not(getf(vr(kept), 'empty')) };
           const item = block.fresh('it');
           return { list: { k: 'map', of: present, as: item, body: getf(vr(item), 'value') }, element: (value: Expr) => ev.view(value, jt) };
+        },
+      };
+    case 'filterWhen':
+      return {
+        t: 'flux',
+        elem: source.elem,
+        run: (block) => {
+          const { list, element } = source.run(block);
+          const each = perElement(ev, block, list, element, applyMono(ev, fn!, node, scope, 'Flux.filterWhen()'), node, 'Flux.filterWhen()');
+          const { emission, as } = each;
+          if (emission.value.t !== 'pure') throw new Unsupported('Flux.filterWhen() predicate is not boolean', node);
+          // An empty predicate filters the element out, like false.
+          const keep = and(not(emission.empty), op('eq', cond(emission.empty, FALSE, emission.value.e), TRUE));
+          if (each.instrs.length === 0) return { list: { k: 'filter', of: list, as, body: keep }, element };
+          const out = each.emit({ keep, item: vr(as) });
+          const row = block.fresh('it');
+          const item = block.fresh('it');
+          return {
+            list: { k: 'map', of: { k: 'filter', of: vr(out), as: row, body: getf(vr(row), 'keep') }, as: item, body: getf(vr(item), 'item') },
+            element,
+          };
         },
       };
     case 'filter':

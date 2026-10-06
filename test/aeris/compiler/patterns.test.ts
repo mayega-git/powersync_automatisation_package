@@ -492,3 +492,61 @@ public class PayloadController {
       .toMatchObject({ status: 500, code: 'LIST_INDEX' });
   });
 });
+
+const PRODUCT_SOURCES = {
+  'demo/orders/ProductEntity.java': `
+package demo.orders;
+import demo.common.PersistableEntity;
+import java.time.Instant;
+import java.util.UUID;
+import org.springframework.data.annotation.Id;
+import org.springframework.data.relational.core.mapping.Table;
+@Table(schema = "orders", name = "product")
+public record ProductEntity(@Id UUID id, UUID tenantId, String name, Instant createdAt, Instant updatedAt) implements PersistableEntity {}
+`,
+  'demo/orders/ProductRepository.java': `
+package demo.orders;
+import java.util.UUID;
+import org.springframework.data.repository.reactive.ReactiveCrudRepository;
+import reactor.core.publisher.Mono;
+public interface ProductRepository extends ReactiveCrudRepository<ProductEntity, UUID> {
+  Mono<ProductEntity> findByIdAndTenantId(UUID id, UUID tenantId);
+  Mono<Boolean> existsByIdAndTenantId(UUID id, UUID tenantId);
+}
+`,
+};
+
+describe('per-element reads', () => {
+  it('compiles Flux.filterWhen and Flux.map whose function reads data into EACH', async () => {
+    const artifact = await compileJava({ ...SOURCES, ...PRODUCT_SOURCES, 'demo/orders/CatalogController.java': `
+package demo.orders;
+import demo.kernel.RequestContextHolder;
+import java.util.List;
+import java.util.UUID;
+import org.springframework.web.bind.annotation.*;
+import reactor.core.publisher.Mono;
+@RestController
+@RequestMapping("/api/orders")
+public class CatalogController {
+  private final LinePort lines;
+  private final ProductRepository products;
+  public CatalogController(LinePort lines, ProductRepository products) { this.lines = lines; this.products = products; }
+  @GetMapping("/{orderId}/known") public Mono<List<String>> known(@PathVariable UUID orderId) {
+    return RequestContextHolder.getRequiredContext().flatMap(ctx -> lines.forOrder(ctx.tenantId(), orderId)
+        .filterWhen(line -> products.existsByIdAndTenantId(line.id(), ctx.tenantId()))
+        .map(Line::label)
+        .collectList());
+  }
+}
+` });
+    const plan = endpoint(artifact, 'GET /api/orders/{orderId}/known');
+    expect(plan.offlineClass, plan.reasons.join('; ')).toBe('LOCAL_READ_SAFE');
+    expect(JSON.stringify(plan.program)).toContain('"op":"EACH"');
+    const product = (id: number) => ({ id: `00000000-0000-4000-8000-00000000000${id}`, tenantId: TENANT, name: `p${id}`, createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-01T00:00:00Z' });
+    const rows = {
+      'demo.orders.LineEntity': [line(1, 'a', 1, 'GOODS'), line(2, 'b', 1, 'GOODS'), line(3, 'c', 1, 'GOODS')],
+      'demo.orders.ProductEntity': [product(1), product(3)],
+    };
+    expect((await run(artifact, 'GET /api/orders/{orderId}/known', rows, { params: { orderId: ORDER }, context: { tenantId: TENANT } })).body).toEqual(['a', 'c']);
+  });
+});
