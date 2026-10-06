@@ -141,7 +141,7 @@ export function libraryStatic(ev: Evaluator, fqn: string, name: string, args: SV
         const target = args[0]!;
         const nullable = target.t === 'pure' ? target.e : target.t === 'obj' && target.base !== undefined && target.fields.size === 0 ? target.base : undefined;
         if (nullable !== undefined) {
-          scope.block.emit({ op: 'ASSERT', test: op('notNull', nullable), error: { status: 500, code: 'NULL_POINTER', message: args[1]?.t === 'pure' ? args[1].e : lit('null') } });
+          scope.block.emit({ op: 'ASSERT', test: op('notNull', nullable), error: ev.errors.map({ t: 'exception', cls: 'java.lang.NullPointerException', message: args[1]?.t === 'pure' ? args[1].e : NULL }) });
         }
         return target;
       }
@@ -153,7 +153,7 @@ export function libraryStatic(ev: Evaluator, fqn: string, name: string, args: SV
       if (name === 'ofNullable' && args.length === 1) return { t: 'optional', value: args[0]!, present: args[0]!.t === 'pure' ? op('notNull', arg(0)) : TRUE };
       if (name === 'of' && args.length === 1) {
         if (args[0]!.t === 'pure') {
-          scope.block.emit({ op: 'ASSERT', test: op('notNull', arg(0)), error: { status: 500, code: 'NULL_POINTER', message: lit('Optional.of(null)') } });
+          scope.block.emit({ op: 'ASSERT', test: op('notNull', arg(0)), error: ev.errors.map({ t: 'exception', cls: 'java.lang.NullPointerException', message: NULL }) });
         }
         return { t: 'optional', value: args[0]!, present: TRUE };
       }
@@ -483,6 +483,17 @@ export function libraryInstance(ev: Evaluator, receiver: SV, name: string, args:
       }
       break;
     case 'exception':
+      if (receiver.status !== undefined && args.length === 0) {
+        // ResponseStatusException family: the status is known; getMessage() is "<code> <NAME> \"reason\"".
+        if (name === 'getStatusCode' || name === 'getStatus' || name === 'getRawStatusCode') return pure(lit(receiver.status), T.int);
+        if (name === 'getReason') return pure(receiver.message, T.string);
+        if (name === 'getMessage' || name === 'getLocalizedMessage') {
+          const statusName = Object.entries(HTTP_STATUS).find(([, code]) => code === receiver.status)?.[0];
+          if (statusName === undefined) throw new Unsupported(`Status ${receiver.status} has no HttpStatus name`, node);
+          const prefix = lit(`${receiver.status} ${statusName}`);
+          return pure(cond(op('isNull', receiver.message), prefix, op('concat', op('concat', op('concat', prefix, lit(' "')), receiver.message), lit('"'))), T.string);
+        }
+      }
       if ((name === 'getMessage' || name === 'getLocalizedMessage' || name === 'getReason') && args.length === 0) return pure(receiver.message, T.string);
       break;
   }

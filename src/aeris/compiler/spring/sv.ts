@@ -41,6 +41,8 @@ export const op = (name: Extract<Expr, { k: 'op' }>['op'], ...args: Expr[]): Exp
     if (name === 'isNull') return lit(a.v === null);
     if (name === 'notNull') return lit(a.v !== null);
     if (name === 'not' && typeof a.v === 'boolean') return lit(!a.v);
+    // Compile-time string constants ("prefix" + X.class.getName()); other operands keep Java's formatting at run time.
+    if (name === 'concat' && args.length === 2 && b !== undefined && b.k === 'lit' && typeof a.v === 'string' && typeof b.v === 'string') return lit(a.v + b.v);
     if (b !== undefined && b.k === 'lit' && (name === 'eq' || name === 'ne') && (typeof a.v !== 'object' || a.v === null) && (typeof b.v !== 'object' || b.v === null)) {
       const equal = a.v === b.v;
       return lit(name === 'eq' ? equal : !equal);

@@ -373,4 +373,82 @@ public class TotalController {
     const result = await run(artifact, 'GET /api/orders/{orderId}/total', { 'demo.orders.LineEntity': [line(1, 'a', 1.1, 'GOODS'), line(2, 'b', 2.25, 'GOODS')] }, { params: { orderId: ORDER }, context: { tenantId: TENANT } });
     expect(result).toEqual({ status: 200, body: 3.35 });
   });
+
+  it('answers runtime-detected failures (null dereference, binding) through the backend exception handlers', async () => {
+    const artifact = await compileJava({ ...SOURCES,
+      'demo/orders/Failures.java': `
+package demo.orders;
+import java.util.Map;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.server.ResponseStatusException;
+@RestControllerAdvice
+public class Failures {
+  @ExceptionHandler(ResponseStatusException.class)
+  public ResponseEntity<Map<String, Object>> status(ResponseStatusException exception) {
+    return ResponseEntity.status(exception.getStatusCode()).body(Map.of("error", "BAD_INPUT"));
+  }
+  @ExceptionHandler(Throwable.class)
+  public ResponseEntity<Map<String, Object>> any(Throwable exception) {
+    return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(Map.of("error", "UNEXPECTED"));
+  }
+}
+`,
+      'demo/orders/EchoController.java': `
+package demo.orders;
+import org.springframework.web.bind.annotation.*;
+import reactor.core.publisher.Mono;
+@RestController
+public class EchoController {
+  @GetMapping("/api/echo") public Mono<String> echo(@RequestParam(required = false) String text, @RequestParam int times) {
+    return Mono.just(text.toUpperCase() + times);
+  }
+}
+` });
+    const plan = endpoint(artifact, 'GET /api/echo');
+    expect(plan.offlineClass, plan.reasons.join('; ')).toBe('LOCAL_READ_SAFE');
+    const ask = (query: Record<string, string>) => run(artifact, 'GET /api/echo', {}, { query, context: { tenantId: TENANT } });
+    expect((await ask({ text: 'a', times: '2' })).body).toBe('A2');
+    expect(await ask({ times: '2' })).toMatchObject({ status: 500, body: { error: 'UNEXPECTED' } });
+    expect(await ask({ text: 'a' })).toMatchObject({ status: 400, body: { error: 'BAD_INPUT' } });
+    expect(await ask({ text: 'a', times: 'x' })).toMatchObject({ status: 400, body: { error: 'BAD_INPUT' } });
+  });
+
+  it('refuses to invent the response of a failure two unordered advices handle', async () => {
+    const advice = (name: string, label: string) => `
+package demo.orders;
+import java.util.Map;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.web.bind.annotation.RestControllerAdvice;
+@RestControllerAdvice
+public class ${name} {
+  @ExceptionHandler(NullPointerException.class)
+  public ResponseEntity<Map<String, Object>> npe(NullPointerException exception) {
+    return ResponseEntity.status(500).body(Map.of("by", "${label}"));
+  }
+}
+`;
+    const artifact = await compileJava({ ...SOURCES,
+      'demo/orders/FirstAdvice.java': advice('FirstAdvice', 'first'),
+      'demo/orders/SecondAdvice.java': advice('SecondAdvice', 'second'),
+      'demo/orders/EchoController.java': `
+package demo.orders;
+import org.springframework.web.bind.annotation.*;
+import reactor.core.publisher.Mono;
+@RestController
+public class EchoController {
+  @GetMapping("/api/echo") public Mono<String> echo(@RequestParam(required = false) String text) {
+    return Mono.just(text.toUpperCase());
+  }
+}
+` });
+    const plan = endpoint(artifact, 'GET /api/echo');
+    expect(plan.offlineClass, plan.reasons.join('; ')).toBe('LOCAL_READ_SAFE');
+    expect(plan.opaqueFailures).toContain('NULL_DEREFERENCE');
+    expect((await run(artifact, 'GET /api/echo', {}, { query: { text: 'a' }, context: { tenantId: TENANT } })).body).toBe('A');
+    await expect(run(artifact, 'GET /api/echo', {}, { query: {}, context: { tenantId: TENANT } })).rejects.toThrow(/cannot be reproduced/);
+  });
 });

@@ -18,6 +18,16 @@ const LIBRARY_HIERARCHY: Readonly<Record<string, string>> = {
   'java.lang.UnsupportedOperationException': 'java.lang.RuntimeException',
   'java.lang.ArithmeticException': 'java.lang.RuntimeException',
   'java.util.NoSuchElementException': 'java.lang.RuntimeException',
+  'java.lang.ClassCastException': 'java.lang.RuntimeException',
+  'org.springframework.security.access.AccessDeniedException': 'java.lang.RuntimeException',
+  'org.springframework.dao.IncorrectResultSizeDataAccessException': 'org.springframework.dao.DataRetrievalFailureException',
+  'org.springframework.dao.DataRetrievalFailureException': 'org.springframework.dao.NonTransientDataAccessException',
+  'org.springframework.dao.DuplicateKeyException': 'org.springframework.dao.DataIntegrityViolationException',
+  'org.springframework.dao.DataIntegrityViolationException': 'org.springframework.dao.NonTransientDataAccessException',
+  'org.springframework.dao.NonTransientDataAccessException': 'org.springframework.dao.DataAccessException',
+  'org.springframework.dao.TransientDataAccessResourceException': 'org.springframework.dao.TransientDataAccessException',
+  'org.springframework.dao.TransientDataAccessException': 'org.springframework.dao.DataAccessException',
+  'org.springframework.dao.DataAccessException': 'org.springframework.core.NestedRuntimeException',
   'java.lang.RuntimeException': 'java.lang.Exception',
   'java.lang.Exception': 'java.lang.Throwable',
 };
@@ -157,7 +167,7 @@ export class ControllerErrorMapper implements ErrorMapper {
       template = this.resolve(exception);
       this.cache.set(key, template);
     }
-    return { ...template, message: exception.message };
+    return { ...template, message: exception.message, exception: exception.cls };
   }
 
   private resolve(exception: ExceptionSV): ErrorSpec {

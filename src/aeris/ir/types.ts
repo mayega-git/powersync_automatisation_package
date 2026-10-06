@@ -184,6 +184,8 @@ export interface ErrorSpec {
    * bound to the evaluated message. Absent: the runtime's default error body.
    */
   body?: Expr;
+  /** Java exception class the backend throws here (documentation and compile-time error routing). */
+  exception?: string;
 }
 
 export type Instr =
@@ -326,6 +328,18 @@ export interface EndpointPlan {
   program?: readonly Instr[];
   /** Number of uuid slots the program consumes. */
   uuidSlots: number;
+  /**
+   * How the backend's exception handlers answer failures the runtime detects
+   * itself, keyed by runtime failure (NULL_DEREFERENCE, CAST, MISSING_PARAMETER...).
+   * Absent entries use the runtime's default error.
+   */
+  runtimeErrors?: Readonly<Record<string, ErrorSpec>>;
+  /**
+   * Runtime failures whose backend response cannot be reproduced (e.g. two
+   * unordered exception handlers): when one occurs, the local execution is
+   * abandoned without effects and the request goes to the server.
+   */
+  opaqueFailures?: readonly string[];
   offlineClass: OfflineClass;
   reasons: readonly string[];
   freshness: Freshness;

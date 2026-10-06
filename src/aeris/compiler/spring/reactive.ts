@@ -20,7 +20,7 @@ import {
   Unsupported,
   VOID,
   vr,
-  type Block,
+  Block,
   type Emission,
   type FluxSV,
   type MonoSV,
@@ -207,7 +207,40 @@ function shapeOf(ev: Evaluator, a: SV, b: SV, e: Expr, node: SyntaxNode): SV {
   return ev.reView(like, e);
 }
 
+/** Every way the instructions can fail: thrown classes, or undefined for failures of unknown class. */
+function failureClasses(instrs: readonly Instr[], out: (string | undefined)[] = []): (string | undefined)[] {
+  for (const instr of instrs) {
+    if (instr.op === 'ASSERT') out.push(instr.error.exception);
+    else if (instr.op === 'IF') { failureClasses(instr.then, out); failureClasses(instr.else, out); }
+    else if (instr.op === 'TRY') failureClasses(instr.fallback, out);
+    else if (instr.op === 'EACH') { failureClasses(instr.body, out); out.push(undefined); }
+    else if (instr.op !== 'LET' && instr.op !== 'EMIT_LOCAL_EVENT' && instr.op !== 'QUEUE_INTENT') out.push(undefined);
+  }
+  return out;
+}
+
+/**
+ * onErrorX(SomeException.class, ...) where SomeException is a project exception
+ * that nothing upstream can throw: the handler never runs.
+ */
+function handlerNeverFires(ev: Evaluator, receiver: MonoSV | FluxSV, filter: SV): boolean {
+  if (filter.t !== 'type') return false;
+  const decl = ev.project.type(filter.fqn);
+  if (decl === undefined) return false;
+  const probe = attempt(new Block({ vars: 0, uuidSlots: 0 }), (child) => (receiver.t === 'mono' ? receiver.run(child) : receiver.run(child)));
+  if (!probe.outcome.ok) return false;
+  return failureClasses(probe.instrs).every((cls) => {
+    if (cls === undefined) return true; // run-time failures (null dereference, row counts) are library exceptions, never a project class
+    if (cls === filter.fqn) return false;
+    const thrown = ev.project.type(cls);
+    return thrown !== undefined ? !ev.project.supertypeNames(thrown).has(filter.fqn) : true;
+  });
+}
+
 function errorHandler(ev: Evaluator, receiver: MonoSV | FluxSV, args: SV[], node: SyntaxNode, scope: Scope, name: string): SV {
+  if (args.length === 2 && ['onErrorResume', 'onErrorReturn', 'onErrorMap', 'onErrorComplete', 'onErrorContinue'].includes(name) && handlerNeverFires(ev, receiver, args[0]!)) {
+    return receiver;
+  }
   if (receiver.t === 'mono') {
     const recoverable = (name === 'onErrorReturn' && args.length === 1) || (name === 'onErrorResume' && args.length === 1) || (name === 'onErrorComplete' && args.length === 0);
     if (recoverable) return recoverMono(ev, receiver, args, node, scope, name);
@@ -346,7 +379,7 @@ function monoCall(ev: Evaluator, source: MonoSV, name: string, args: SV[], node:
       return mono(source.elem, (block) => {
         const emission = source.run(block);
         if (!isLit(emission.empty, false)) {
-          block.emit({ op: 'ASSERT', test: not(emission.empty), error: { status: 500, code: 'NO_SUCH_ELEMENT', message: lit('Source was empty') } });
+          block.emit({ op: 'ASSERT', test: not(emission.empty), error: ev.errors.map({ t: 'exception', cls: 'java.util.NoSuchElementException', message: lit('Source was empty') }) });
         }
         return { value: emission.value, empty: FALSE };
       });

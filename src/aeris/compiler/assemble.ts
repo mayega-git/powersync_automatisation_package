@@ -230,6 +230,8 @@ function classify(draftIn: EndpointDraft, scopes: ReadonlyMap<string, EntityScop
     reads: [...new Set(draft.reads)].sort(),
     writes: [...new Set(draft.writes)].sort(),
     uuidSlots: draft.uuidSlots,
+    ...(draft.runtimeErrors === undefined ? {} : { runtimeErrors: draft.runtimeErrors }),
+    ...(draft.opaqueFailures === undefined ? {} : { opaqueFailures: draft.opaqueFailures }),
     evidence: draft.evidence,
     testVectors: [],
   };

@@ -718,6 +718,13 @@ export class Evaluator {
     const types = named(named(parameter).find((child) => child.type === 'catch_type') ?? parameter)
       .filter((child) => child.type.endsWith('type_identifier') || child.type === 'scoped_type_identifier')
       .map((typeNode) => this.project.parseType(typeNode, scope.owner).name);
+    // `catch (E e) { throw e; }` or `{ return Mono.error(e); }`: the same failure either way, the try/catch is transparent.
+    const caughtName = (field(parameter, 'name') ?? named(parameter).filter((child) => child.type === 'identifier').at(-1))?.text;
+    const handler = field(clause, 'body') ?? named(clause).at(-1)!;
+    const handlerStatements = handler.type === 'block' ? statementsOf(handler) : [handler];
+    const rethrow = caughtName !== undefined && handlerStatements.length === 1
+      && new RegExp(`^(throw\\s+${caughtName}|return\\s+(reactor\\.core\\.publisher\\.)?(Mono|Flux)\\.error\\(\\s*${caughtName}\\s*\\))\\s*;$`).test(handlerStatements[0]!.text.trim());
+    if (rethrow) return this.statements(statementsOf(tryBlock), 0, { ...scope, env: scope.env.child() });
     const castOnly = ['java.lang.IllegalArgumentException', 'java.lang.NumberFormatException', 'java.time.format.DateTimeParseException'];
     const catchesAll = types.some((type) => ['java.lang.Exception', 'java.lang.RuntimeException', 'java.lang.Throwable'].includes(type));
     if (!catchesAll && !types.every((type) => castOnly.includes(type))) this.fail(`catch (${types.map((type) => type.slice(type.lastIndexOf('.') + 1)).join(' | ')}) is not modeled`, node, scope);
@@ -1158,7 +1165,8 @@ export class Evaluator {
     if (node.type === 'identifier' || node.type === 'field_access' || node.type === 'scoped_identifier') {
       if (node.type === 'identifier' && scope.env.has(node.text)) return scope.env.get(node.text)!;
       const qualified = node.text.replace(/\s+/g, '');
-      if (/^[A-Za-z_$][\w$]*(\.[A-Za-z_$][\w$]*)+$/.test(qualified) || node.type === 'identifier') {
+      const instanceAccess = /^(this|super)\./.test(qualified);
+      if (!instanceAccess && (/^[A-Za-z_$][\w$]*(\.[A-Za-z_$][\w$]*)+$/.test(qualified) || node.type === 'identifier')) {
         const asType = this.project.type(qualified) ?? (node.type === 'identifier' ? undefined : this.project.type(this.project.resolveTypeName(qualified, scope.owner) ?? ''));
         if (asType !== undefined && !(node.type === 'identifier' && (scope.self !== undefined && this.member(scope.self, node.text, scope, node) !== undefined))) {
           return { t: 'type', fqn: asType.fqn };
@@ -1943,7 +1951,7 @@ export class Evaluator {
             run: (block) => {
               this.useEntity(entity, 'read');
               if (!isLit(id) || isLit(id, null)) {
-                block.emit({ op: 'ASSERT', test: op('notNull', id), error: { status: 500, code: 'ILLEGAL_ARGUMENT', message: lit('The given id must not be null') } });
+                block.emit({ op: 'ASSERT', test: op('notNull', id), error: this.errors.map({ t: 'exception', cls: 'java.lang.IllegalArgumentException', message: lit('The given id must not be null') }) });
               }
               const out = block.fresh(entity.decl.simple.toLowerCase());
               block.emit({ op: 'QUERY', out, entity: entity.fqn, mode: 'one', where: [{ field: entity.key, cmp: 'eq', value: id }] });

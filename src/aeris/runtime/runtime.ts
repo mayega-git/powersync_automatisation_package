@@ -21,6 +21,7 @@ import { compareResults } from './compare.js';
 import {
   AerisExecutionError,
   AerisHttpError,
+  AerisUnreproducibleError,
   Executor,
   type Effect,
   type ExecutionRequest,
@@ -415,7 +416,7 @@ export class AerisRuntime {
       }
       if (decision === undefined) decision = evaluatePolicy(policy, context ?? {}, this.options.policyBeans);
       if (decision === undefined) return this.blocked(plan, `Authorization ${policy} cannot be checked offline.`);
-      if (!decision) return this.errorResponse(403, 'ACCESS_DENIED', 'Access denied.', request.url);
+      if (!decision) return this.failure(plan, request, new AerisHttpError(403, 'ACCESS_DENIED', 'Access denied.', undefined, 'ACCESS_DENIED'));
     }
     if (plan.auth.anyAuthority !== undefined && plan.auth.anyAuthority.length > 0) {
       const granted = toStringList(context?.authorities ?? context?.roles);
@@ -431,7 +432,7 @@ export class AerisRuntime {
       try {
         body = JSON.parse(request.body) as JsonValue;
       } catch {
-        return this.errorResponse(400, 'INVALID_BODY', 'Malformed JSON request body.', request.url);
+        return this.failure(plan, request, new AerisHttpError(400, 'INVALID_BODY', 'Malformed JSON request body.', undefined, 'INVALID_BODY'));
       }
     }
     const frozenContext: Record<string, JsonValue> = {};
@@ -465,6 +466,10 @@ export class AerisRuntime {
         body: result.body === null ? null : JSON.stringify(result.body),
       };
     } catch (error) {
+      if (error instanceof AerisUnreproducibleError) {
+        this.emit({ type: 'blocked', endpointId: plan.id, reason: error.message });
+        return undefined;
+      }
       if (error instanceof AerisHttpError) {
         if (error.body !== undefined) {
           return {
@@ -524,6 +529,18 @@ export class AerisRuntime {
       updatedAt: this.clock(),
     };
     await tx.outboxPut(toRecord(entry));
+  }
+
+  /** A failure the runtime detects before running the program, answered like the backend's handlers. */
+  private failure(plan: EndpointPlan, request: RuntimeRequest, error: AerisHttpError): RuntimeResponse | undefined {
+    const execution: ExecutionRequest = { params: {}, query: {}, body: undefined, context: {}, path: pathOf(request.url) };
+    const translated = this.executor!.translate(plan, execution, error);
+    if (translated instanceof AerisUnreproducibleError) return undefined;
+    const shaped = translated as AerisHttpError;
+    if (shaped.body !== undefined) {
+      return { status: shaped.status, headers: { ...JSON_HEADERS, [STATE_HEADER.toLowerCase()]: 'local' }, body: JSON.stringify(shaped.body) };
+    }
+    return this.errorResponse(shaped.status, shaped.code, shaped.message, request.url);
   }
 
   private blocked(plan: EndpointPlan, reason: string): RuntimeResponse {

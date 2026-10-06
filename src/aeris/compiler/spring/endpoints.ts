@@ -2,6 +2,7 @@ import type {
   OfflineClass,
   AuthRequirement,
   EndpointPlan,
+  ErrorSpec,
   Evidence,
   Expr,
   FieldType,
@@ -70,6 +71,51 @@ export interface EndpointDraft {
   speculative: string[];
   /** From @AerisOnlineOnly / @AerisOffline: restricts the computed class. */
   declared?: { offlineClass: OfflineClass; reason: string };
+  runtimeErrors?: Record<string, ErrorSpec>;
+  opaqueFailures?: string[];
+}
+
+/** Java exception behind each failure the runtime detects itself (status for ResponseStatusException kinds). */
+const RUNTIME_FAILURES: Readonly<Record<string, { cls: string; status?: number }>> = {
+  NULL_DEREFERENCE: { cls: 'java.lang.NullPointerException' },
+  ARITHMETIC: { cls: 'java.lang.ArithmeticException' },
+  CAST: { cls: 'java.lang.IllegalArgumentException' },
+  TYPE_MISMATCH: { cls: 'java.lang.ClassCastException' },
+  INCORRECT_RESULT_SIZE: { cls: 'org.springframework.dao.IncorrectResultSizeDataAccessException' },
+  DUPLICATE_KEY: { cls: 'org.springframework.dao.DuplicateKeyException' },
+  NOT_NULL_VIOLATION: { cls: 'org.springframework.dao.DataIntegrityViolationException' },
+  VALUE_TOO_LONG: { cls: 'org.springframework.dao.DataIntegrityViolationException' },
+  ROW_NOT_FOUND: { cls: 'org.springframework.dao.TransientDataAccessResourceException' },
+  MISSING_PATH_VARIABLE: { cls: 'org.springframework.web.server.ServerWebInputException', status: 400 },
+  MISSING_PARAMETER: { cls: 'org.springframework.web.server.ServerWebInputException', status: 400 },
+  MISSING_BODY: { cls: 'org.springframework.web.server.ServerWebInputException', status: 400 },
+  INVALID_BODY: { cls: 'org.springframework.web.server.ServerWebInputException', status: 400 },
+  INVALID_VALUE: { cls: 'org.springframework.web.server.ServerWebInputException', status: 400 },
+  ACCESS_DENIED: { cls: 'org.springframework.security.access.AccessDeniedException', status: 403 },
+};
+
+function runtimeErrors(evaluator: Evaluator): { runtimeErrors?: Record<string, ErrorSpec>; opaqueFailures?: string[] } {
+  const errors: Record<string, ErrorSpec> = {};
+  const opaque: string[] = [];
+  for (const [failure, { cls, status }] of Object.entries(RUNTIME_FAILURES)) {
+    let spec: ErrorSpec;
+    try {
+      // The ResponseStatusException family carries its status; AccessDeniedException's is applied by Spring Security.
+      const exception = { t: 'exception' as const, cls, message: NULL, ...(status === undefined || failure === 'ACCESS_DENIED' ? {} : { status }) };
+      spec = evaluator.errors.map(exception);
+      if (failure === 'ACCESS_DENIED' && spec.status === 500 && spec.body === undefined) spec = { ...spec, status: 403 };
+    } catch (error) {
+      if (!(error instanceof Unsupported)) throw error;
+      opaque.push(failure);
+      continue;
+    }
+    // Without a handler the runtime's own default (Spring's default error response) already applies.
+    if (spec.body !== undefined || spec.status !== (status ?? 500)) errors[failure] = { ...spec };
+  }
+  return {
+    ...(Object.keys(errors).length > 0 ? { runtimeErrors: errors } : {}),
+    ...(opaque.length > 0 ? { opaqueFailures: opaque } : {}),
+  };
 }
 
 export interface CompileContext {
@@ -276,7 +322,7 @@ function compileEndpoint(
     collectClaims(program, claims);
     collectClaims(auth.checks, claims);
     auth.context.push(...[...claims].sort());
-    return draft({ program, output, uuidSlots: evaluator.counters.uuidSlots });
+    return draft({ program, output, uuidSlots: evaluator.counters.uuidSlots, ...runtimeErrors(evaluator) });
   } catch (error) {
     if (error instanceof Diverged) return draft({ unsupported: 'The handler always fails.' });
     if (error instanceof Unsupported) {

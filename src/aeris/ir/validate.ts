@@ -231,6 +231,16 @@ function validateEndpoint(
     if (typeof check.policy !== 'string') problems.push(`${where}: malformed authorization check`);
     validateExpr(check.test, new Set(), state, 0);
   }
+  if (endpoint.opaqueFailures !== undefined && (!Array.isArray(endpoint.opaqueFailures) || endpoint.opaqueFailures.some((item) => typeof item !== 'string'))) {
+    problems.push(`${where}: opaqueFailures must be a list of failure kinds`);
+  }
+  for (const [failure, spec] of Object.entries(endpoint.runtimeErrors ?? {})) {
+    if (!isRecord(spec) || !(Number.isSafeInteger(spec.status) && spec.status >= 400 && spec.status <= 599) || typeof spec.code !== 'string') {
+      problems.push(`${where}: malformed runtime error ${failure}`);
+    } else if (spec.body !== undefined) {
+      validateExpr(spec.body, new Set(['$message']), state, 0);
+    }
+  }
   const terminates = validateBlock(endpoint.program, new Set(), state, 0);
   if (!terminates) problems.push(`${where}: every execution path must end with RETURN`);
   for (const entity of state.writes) {

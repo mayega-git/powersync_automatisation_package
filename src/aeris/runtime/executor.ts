@@ -68,9 +68,23 @@ export class AerisHttpError extends Error {
     message: string,
     /** Exact error body when the artifact carries the backend's handler shape. */
     readonly body?: JsonValue,
+    /**
+     * `program`: raised by an ASSERT (already shaped by the backend's handlers).
+     * Otherwise the runtime failure kind (its code, or CAST), which the plan's
+     * runtimeErrors translate into the backend's handler response.
+     */
+    readonly origin?: string,
   ) {
     super(message);
     this.name = 'AerisHttpError';
+  }
+}
+
+/** A failure whose backend response the artifact cannot reproduce: the request must go to the server. */
+export class AerisUnreproducibleError extends Error {
+  constructor(readonly failure: string, message: string) {
+    super(message);
+    this.name = 'AerisUnreproducibleError';
   }
 }
 
@@ -106,11 +120,35 @@ export class Executor {
     return value;
   }
 
+  /**
+   * A failure detected by the runtime itself (null dereference, binding error,
+   * row count...) answered the way the backend's exception handlers answer the
+   * corresponding Java exception.
+   */
+  translate(plan: EndpointPlan, request: ExecutionRequest, error: unknown): unknown {
+    if (!(error instanceof AerisHttpError) || error.origin === 'program') return error;
+    const failure = error.origin ?? error.code;
+    if (plan.opaqueFailures?.includes(failure)) {
+      return new AerisUnreproducibleError(failure, `${plan.id}: the backend's response to ${failure} cannot be reproduced locally.`);
+    }
+    const spec = plan.runtimeErrors?.[failure];
+    if (spec === undefined) return error;
+    const frame = new Frame(this.options, plan, { params: {}, query: {}, body: undefined }, request, { now: Date.now(), uuids: [] }, undefined as unknown as StoreTx);
+    const body = spec.body === undefined ? undefined : frame.eval(spec.body, new Map([['$message', error.message]]));
+    return new AerisHttpError(spec.status, spec.code, error.message, body, 'program');
+  }
+
   async execute(plan: EndpointPlan, request: ExecutionRequest, captured: Captured, tx: StoreTx): Promise<ExecutionResult> {
     if (plan.program === undefined) throw new AerisExecutionError(`${plan.id} has no program.`);
     if (captured.uuids.length < plan.uuidSlots) throw new AerisExecutionError(`${plan.id} needs ${plan.uuidSlots} captured identifiers.`);
-    const frame = new Frame(this.options, plan, bindInput(plan, request), request, captured, tx);
-    const outcome = await frame.block(plan.program);
+    let outcome: { status: number; body: JsonValue | null } | undefined;
+    let frame: Frame;
+    try {
+      frame = new Frame(this.options, plan, bindInput(plan, request), request, captured, tx);
+      outcome = await frame.block(plan.program);
+    } catch (error) {
+      throw this.translate(plan, request, error);
+    }
     if (outcome === undefined) throw new AerisExecutionError(`${plan.id} ended without RETURN.`);
     return {
       status: outcome.status,
@@ -244,7 +282,7 @@ class Frame {
           const message = this.eval(instr.error.message);
           const text = typeof message === 'string' ? message : JSON.stringify(message);
           const body = instr.error.body === undefined ? undefined : this.eval(instr.error.body, new Map([['$message', text]]));
-          throw new AerisHttpError(instr.error.status, instr.error.code, text, body);
+          throw new AerisHttpError(instr.error.status, instr.error.code, text, body, 'program');
         }
         return undefined;
       case 'IF':
@@ -504,7 +542,7 @@ class Frame {
         try {
           return castValue(value, expr.to, expr.values);
         } catch (error) {
-          throw new AerisHttpError(400, 'INVALID_VALUE', (error as Error).message);
+          throw new AerisHttpError(400, 'INVALID_VALUE', (error as Error).message, undefined, 'CAST');
         }
       }
       default:
