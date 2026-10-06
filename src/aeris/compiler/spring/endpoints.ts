@@ -619,8 +619,23 @@ function finalize(ev: Evaluator, jackson: JacksonModel, method: MethodDecl, resu
   const status = declaredStatus(method);
   const block = scope.block;
   const ret = (code: number, body: Expr | null): Instr => {
-    if (code >= 500 || code < 200) throw new Unsupported(`The handler answers ${code}`);
+    // A 5xx answer is reproduced only by programs that do not write (it is never a provisional success).
+    if (code < 200 || code > 599 || (code >= 500 && ev.writes.size > 0)) throw new Unsupported(`The handler answers ${code}`);
     return { op: 'RETURN', status: code, body };
+  };
+  /** Emits the RETURN(s) of a value; a choice of responses becomes IFs. */
+  const emitValue = (value: SV, child: Block): { code: number; body: Expr | null } => {
+    if (value.t === 'responses') {
+      const left = child.child();
+      const right = child.child();
+      const chosen = emitValue(value.a, left);
+      emitValue(value.b, right);
+      emitIf(child, value.test, left.instrs, right.instrs);
+      return chosen;
+    }
+    const { code, body } = bodyOf(value, child);
+    child.emit(ret(code, body));
+    return { code, body };
   };
   const bodyOf = (value: SV, child: Block): { code: number; body: Expr | null } => {
     if (value.t === 'response') {
@@ -637,13 +652,11 @@ function finalize(ev: Evaluator, jackson: JacksonModel, method: MethodDecl, resu
         return { status, list: false, empty: true };
       }
       if (isLit(emission.empty, false)) {
-        const { code, body } = bodyOf(emission.value, block);
-        block.emit(ret(code, body));
+        const { code, body } = emitValue(emission.value, block);
         return { status: code, list: false, empty: body === null };
       }
       const present = block.child();
-      const { code, body } = bodyOf(emission.value, present);
-      present.emit(ret(code, body));
+      const { code } = emitValue(emission.value, present);
       emitIf(block, emission.empty, [ret(status, null)], present.instrs);
       return { status: code, list: false, empty: false };
     }
@@ -654,8 +667,7 @@ function finalize(ev: Evaluator, jackson: JacksonModel, method: MethodDecl, resu
       return { status, list: true, empty: false };
     }
     default: {
-      const { code, body } = bodyOf(result, block);
-      block.emit(ret(code, body));
+      const { code, body } = emitValue(result, block);
       return { status: code, list: result.t === 'list', empty: body === null };
     }
   }

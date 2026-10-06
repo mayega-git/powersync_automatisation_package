@@ -25,6 +25,9 @@ import {
   type Emission,
   type FluxSV,
   type MonoSV,
+  type ResponseSV,
+  type ResponsesSV,
+  responseCases,
   type SV,
 } from './sv.js';
 
@@ -195,9 +198,24 @@ function recoverMono(ev: Evaluator, receiver: MonoSV, args: SV[], node: SyntaxNo
     }
     const emptySlot = block.fresh('recovered');
     const valueSlot = block.fresh('recovered');
+    // ResponseEntity values: each possible response is a template; a tag says which one was produced.
+    const templates: { status: number; like?: SV; slot: string }[] = [];
     const settle = (child: Block, emission: Emission) => {
       child.emit({ op: 'LET', out: emptySlot, expr: emission.empty });
-      if (emission.value.t !== 'void') child.emit({ op: 'LET', out: valueSlot, expr: cond(emission.empty, NULL, ev.encode(emission.value)) });
+      const value = emission.value;
+      if (value.t === 'response' || value.t === 'responses') {
+        let tag: Expr = lit(-1);
+        for (const { test, response } of responseCases(value).reverse()) {
+          const index = templates.length;
+          const slot = block.fresh('recovered');
+          templates.push({ status: response.status, ...(response.body === undefined ? {} : { like: response.body }), slot });
+          if (response.body !== undefined) child.emit({ op: 'LET', out: slot, expr: cond(and(not(emission.empty), test), ev.encode(response.body), NULL) });
+          tag = cond(test, lit(index), tag);
+        }
+        child.emit({ op: 'LET', out: valueSlot, expr: cond(emission.empty, lit(-1), tag) });
+        return;
+      }
+      if (value.t !== 'void') child.emit({ op: 'LET', out: valueSlot, expr: cond(emission.empty, NULL, ev.encode(value)) });
     };
     const body = attempt(block, (child) => {
       const emission = receiver.run(child);
@@ -225,7 +243,32 @@ function recoverMono(ev: Evaluator, receiver: MonoSV, args: SV[], node: SyntaxNo
     if (JSON.stringify(fallback.instrs).includes(CAUGHT)) throw new Unsupported(`${name}() inspects the caught error`, node);
     const recovered = fallback.outcome.value.value;
     const produced = body.outcome.ok ? body.outcome.value.value : recovered;
+    const isResponse = (value: SV) => value.t === 'response' || value.t === 'responses';
+    if (isResponse(produced) !== isResponse(recovered)) throw new Unsupported(`${name}() recovers a response with a plain value`, node);
+    // Both sides define every body slot (null on the side that cannot produce that response).
+    for (const instrs of [body.instrs, fallback.instrs]) {
+      const defined = new Set(instrs.flatMap((instr) => (instr.op === 'LET' ? [instr.out] : [])));
+      for (const template of templates) {
+        if (template.like !== undefined && !defined.has(template.slot)) instrs.push({ op: 'LET', out: template.slot, expr: NULL });
+      }
+    }
+    const definesValue = (instrs: Instr[]) => instrs.some((instr) => instr.op === 'LET' && instr.out === valueSlot);
+    if (definesValue(body.instrs) || definesValue(fallback.instrs)) {
+      for (const instrs of [body.instrs, fallback.instrs]) if (!definesValue(instrs)) instrs.push({ op: 'LET', out: valueSlot, expr: NULL });
+    }
     block.emit({ op: 'TRY', body: body.instrs, fallback: fallback.instrs });
+    if (templates.length > 0) {
+      // Rebuild the choice of responses over the tag; bodies are viewed through their slot.
+      const responseAt = (index: number): ResponseSV => {
+        const template = templates[index]!;
+        return { t: 'response', status: template.status, body: template.like === undefined ? undefined : shapeOf(ev, template.like, template.like, vr(template.slot), node) };
+      };
+      let value: ResponseSV | ResponsesSV = responseAt(templates.length - 1);
+      for (let index = templates.length - 2; index >= 0; index -= 1) {
+        value = { t: 'responses', test: op('eq', vr(valueSlot), lit(index)), a: responseAt(index), b: value };
+      }
+      return { value, empty: vr(emptySlot) };
+    }
     const value = shapeOf(ev, produced, recovered, vr(valueSlot), node);
     return { value, empty: vr(emptySlot) };
   });

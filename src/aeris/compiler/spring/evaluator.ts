@@ -245,7 +245,9 @@ export class Evaluator {
     }
     if (a.t === 'list' && b.t === 'list') return { ...a, e: cond(test, a.e, b.e) };
     if (a.t === 'list' && b.t === 'pure') return { ...a, e: cond(test, a.e, b.e) };
-    if ((a.t === 'obj' && a.cls === MUTABLE_LIST && b.t === 'list') || (b.t === 'obj' && b.cls === MUTABLE_LIST && a.t === 'list')) {
+    // A mutable collection on one side, an immutable one on the other: the merged value is read-only (mutating it is refused).
+    const mutable = (value: SV) => value.t === 'obj' && (value.cls === MUTABLE_LIST || value.cls === MUTABLE_SET);
+    if ((mutable(a) && b.t === 'list') || (mutable(b) && a.t === 'list')) {
       const left = a.t === 'list' ? a : this.readField(a as ObjSV, '$items') as ListSV;
       const right = b.t === 'list' ? b : this.readField(b as ObjSV, '$items') as ListSV;
       return { ...left, e: cond(test, left.e, right.e) };
@@ -274,6 +276,7 @@ export class Evaluator {
         : this.merge(test, a.body, b.body);
       return { t: 'response', status: a.status, body };
     }
+    if ((a.t === 'response' || a.t === 'responses') && (b.t === 'response' || b.t === 'responses')) return { t: 'responses', test, a, b };
     if (a.t === 'void' && b.t === 'void') return a;
     if (a.t === b.t && (a.t === 'bean' || a.t === 'repo' || a.t === 'type' || a.t === 'logger')) {
       if (JSON.stringify(a) === JSON.stringify(b)) return a;

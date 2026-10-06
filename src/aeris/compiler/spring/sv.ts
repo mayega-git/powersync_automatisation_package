@@ -330,10 +330,24 @@ export interface ResponseSV {
   body: SV | undefined;
 }
 
+/** One of two responses (with different statuses) depending on `test`. */
+export interface ResponsesSV {
+  t: 'responses';
+  test: Expr;
+  a: ResponseSV | ResponsesSV;
+  b: ResponseSV | ResponsesSV;
+}
+
 export type SV =
   | PureSV | ObjSV | BuilderSV | MonoSV | FluxSV | OptionalSV | ListSV | LambdaSV | MethodRefSV
-  | BeanSV | RepoSV | TypeSV | ExceptionSV | TupleSV | VoidSV | ResponseSV | ExternalSV | LoggerSV | TxOperatorSV
+  | BeanSV | RepoSV | TypeSV | ExceptionSV | TupleSV | VoidSV | ResponseSV | ResponsesSV | ExternalSV | LoggerSV | TxOperatorSV
   | OpaqueSV | TemplateSV | CriteriaSV | SortSV | ComparatorSV;
+
+/** The responses a value can be, each with the condition under which it is chosen. */
+export function responseCases(value: ResponseSV | ResponsesSV, test: Expr = TRUE): { test: Expr; response: ResponseSV }[] {
+  if (value.t === 'response') return [{ test, response: value }];
+  return [...responseCases(value.a, and(test, value.test)), ...responseCases(value.b, and(test, not(value.test)))];
+}
 
 export const VOID: VoidSV = { t: 'void' };
 

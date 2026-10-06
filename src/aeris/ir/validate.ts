@@ -247,6 +247,7 @@ function validateEndpoint(
     if (!endpoint.writes.includes(entity)) problems.push(`${where}: program writes ${entity}, not declared in writes`);
   }
   if (state.writes.size > 0 && !state.queued) problems.push(`${where}: a program that writes must QUEUE_INTENT`);
+  if (state.writes.size > 0 && state.serverErrorReturn) problems.push(`${where}: a program that writes cannot RETURN a 5xx status`);
   if (state.writes.size > 0 && endpoint.offlineClass === 'LOCAL_READ_SAFE') {
     problems.push(`${where}: LOCAL_READ_SAFE program writes`);
   }
@@ -262,6 +263,7 @@ interface ProgramState {
   params: ReadonlySet<string>;
   query: ReadonlySet<string>;
   contextClaims: ReadonlySet<string>;
+  serverErrorReturn?: boolean;
 }
 
 /** Returns true when every path through the block ends with RETURN. */
@@ -393,9 +395,10 @@ function validateInstr(instr: Instr, scope: Set<string>, state: ProgramState, de
       state.queued = true;
       return false;
     case 'RETURN':
-      if (!(Number.isSafeInteger(instr.status) && instr.status >= 200 && instr.status <= 499)) {
-        problems.push(`${where}: RETURN status must be 2xx-4xx`);
+      if (!(Number.isSafeInteger(instr.status) && instr.status >= 200 && instr.status <= 599)) {
+        problems.push(`${where}: RETURN status must be 2xx-5xx`);
       }
+      if (instr.status >= 500) state.serverErrorReturn = true;
       if (instr.body !== null) validateExpr(instr.body, scope, state, depth);
       return true;
     default:

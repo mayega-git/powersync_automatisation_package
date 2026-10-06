@@ -597,3 +597,37 @@ public class FormatController {
     expect((await ask('26-01')).status).toBe(500);
   });
 });
+
+describe('response choices', () => {
+  it('compiles map(ok).defaultIfEmpty(notFound).onErrorResume(500) with exact statuses', async () => {
+    const artifact = await compileJava({ ...SOURCES, ...PRODUCT_SOURCES, 'demo/orders/ProductLookupController.java': `
+package demo.orders;
+import demo.kernel.RequestContextHolder;
+import java.util.UUID;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.*;
+import reactor.core.publisher.Mono;
+@RestController
+public class ProductLookupController {
+  private final ProductRepository products;
+  public ProductLookupController(ProductRepository products) { this.products = products; }
+  @GetMapping("/api/products/{id}") public Mono<ResponseEntity<String>> get(@PathVariable UUID id) {
+    return RequestContextHolder.getRequiredContext()
+        .flatMap(ctx -> products.findByIdAndTenantId(id, ctx.tenantId()))
+        .map(product -> product.name().toUpperCase())
+        .map(ResponseEntity::ok)
+        .defaultIfEmpty(ResponseEntity.notFound().build())
+        .onErrorResume(e -> Mono.just(ResponseEntity.status(500).build()));
+  }
+}
+` });
+    const plan = endpoint(artifact, 'GET /api/products/{id}');
+    expect(plan.offlineClass, plan.reasons.join('; ')).toBe('LOCAL_READ_SAFE');
+    const product = (id: number, name: string | null) => ({ id: `00000000-0000-4000-8000-00000000000${id}`, tenantId: TENANT, name, createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-01T00:00:00Z' });
+    const rows = { 'demo.orders.ProductEntity': [product(1, 'bolt'), product(2, null)] };
+    const ask = (id: number) => run(artifact, 'GET /api/products/{id}', rows, { params: { id: `00000000-0000-4000-8000-00000000000${id}` }, context: { tenantId: TENANT } });
+    expect(await ask(1)).toEqual({ status: 200, body: 'BOLT' });
+    expect(await ask(3)).toEqual({ status: 404, body: null });
+    expect(await ask(2)).toEqual({ status: 500, body: null });
+  });
+});
