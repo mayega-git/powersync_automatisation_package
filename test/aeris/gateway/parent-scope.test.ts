@@ -1,12 +1,11 @@
 import pg from 'pg';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { DATABASE_URL, suite } from './database.js';
 import type { AerisArtifact, Projection } from '../../../src/aeris/ir/types.js';
 import { ProjectionReader, rawTypes } from '../../../src/aeris/gateway/data.js';
 import { setupSql } from '../../../src/aeris/gateway/sql.js';
 import { ENTITY, ORG, OTHER_ORG, artifact as baseArtifact } from '../runtime/fixtures.js';
 
-const DATABASE_URL = process.env.AERIS_TEST_DATABASE_URL;
-const suite = DATABASE_URL === undefined ? describe.skip : describe;
 
 const LINE = 'SalesPointLine';
 const lines: Projection = {

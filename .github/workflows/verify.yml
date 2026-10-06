@@ -1,0 +1,58 @@
+name: verify
+
+# What has to stay true. The unit suite carries the compiler's proofs and the
+# second-backend corpus; the integration suite is the only place a real
+# PostgreSQL, the change log and the whole offline write → reconcile → converge
+# cycle actually run. Those must never be skipped here, so the database is a
+# service and AERIS_REQUIRE_INTEGRATION turns a missing one into a failure.
+
+on:
+  push:
+    branches: [master, aeris]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: aeris
+          POSTGRES_PASSWORD: aeris
+          POSTGRES_DB: aeris
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U aeris"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    env:
+      AERIS_TEST_DATABASE_URL: postgres://aeris:aeris@127.0.0.1:5432/aeris
+      AERIS_REQUIRE_INTEGRATION: '1'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - run: npm ci
+
+      - name: Types
+        run: npm run typecheck
+
+      - name: Unit suite, including the second-backend corpus
+        run: npm test
+
+      - name: Integration suite against PostgreSQL
+        run: npm run test:integration
+
+      - name: The published build still compiles
+        run: npm run build

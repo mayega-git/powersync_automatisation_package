@@ -60,7 +60,8 @@
     "example": "tsx example/main.ts",
     "cli": "tsx src/init/bin.ts",
     "aeris": "tsx src/aeris/cli/bin.ts",
-    "test:integration": "AERIS_TEST_DATABASE_URL=${AERIS_TEST_DATABASE_URL:-postgres://aeris:aeris@127.0.0.1:15433/aeris} vitest run test/aeris/gateway"
+    "test:integration": "AERIS_REQUIRE_INTEGRATION=1 AERIS_TEST_DATABASE_URL=${AERIS_TEST_DATABASE_URL:-postgres://aeris:aeris@127.0.0.1:15433/aeris} vitest run test/aeris/gateway",
+    "test:all": "npm run typecheck && npm run test && npm run test:integration"
   },
   "keywords": [
     "aeris",

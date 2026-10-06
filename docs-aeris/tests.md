@@ -1,5 +1,20 @@
 # Tests
 
+Une seule commande fait foi :
+
+```bash
+npm run test:all      # types + unitaires + intégration, dans cet ordre
+```
+
+**La suite d'intégration ne doit jamais être sautée là où son résultat compte.**
+C'est le seul endroit où un vrai PostgreSQL, le journal de changements et le cycle complet
+écriture hors ligne → réconciliation → convergence s'exécutent ; une suite unitaire verte
+qui l'a sautée prouve beaucoup moins qu'il n'y paraît. Sans base de données, elle se saute
+pour garder la boucle de développement rapide, mais `AERIS_REQUIRE_INTEGRATION=1` — posé
+par `test:all` et par la CI — transforme l'absence de base en **échec** au lieu d'un
+silence. La CI (`.github/workflows/verify.yml`) fournit la base en service et rejoue la
+chaîne entière à chaque poussée, plus `npm run build`.
+
 | Suite | Commande | Couvre |
 |---|---|---|
 | Unitaires | `npm test` | IR (validation, signatures), exécuteur, trois stores (même suite de conformité), runtime (hors ligne, remapping, dépendances, conflits, rejeu, rebase, coupe-circuit, fraîcheur, purge, downgrade), politiques, intégration navigateur, compilateur (projets Spring de référence) |

@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import pg from 'pg';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { DATABASE_URL, suite } from './database.js';
 import { createGateway, type Gateway } from '../../../src/aeris/gateway/server.js';
 import type { GatewayConfig } from '../../../src/aeris/gateway/config.js';
 import { rawTypes } from '../../../src/aeris/gateway/data.js';
@@ -12,8 +13,6 @@ import { MemoryStore } from '../../../src/aeris/runtime/store/MemoryStore.js';
 import { HttpTransport } from '../../../src/aeris/runtime/transport.js';
 import { ENTITY, keyPair, ORG, OTHER_ORG, signed } from '../runtime/fixtures.js';
 
-const DATABASE_URL = process.env.AERIS_TEST_DATABASE_URL;
-const suite = DATABASE_URL === undefined ? describe.skip : describe;
 
 /** A backend with the SalesPoint semantics, storing in PostgreSQL and honoring Idempotency-Key. */
 async function startBackend(pool: pg.Pool): Promise<{ server: Server; url: string; executions: () => number }> {
