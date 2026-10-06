@@ -158,15 +158,23 @@ function inferScopes(drafts: readonly EndpointDraft[], entities: ReadonlyMap<str
         if (model !== undefined && (model.type.type === 'uuid' || model.type.type === 'string') && !model.type.list) candidates.add(pairKey(property, claim));
       }
     }
-    if (candidates.size === 0) {
-      out.set(entity.fqn, { public: false, filters: new Map(), reason: `${entity.decl.simple} has no property carrying a session claim (configure scopeClaims or publicEntities).` });
-      continue;
-    }
     const guardSets: Set<ScopePair>[] = [];
     const inserted = new Set<ScopePair>();
     for (const draft of drafts) {
       for (const guard of queryGuards(draft.program!, keysOf(entities))) if (guard.entity === entity.fqn) guardSets.push(guard.pairs);
       for (const pair of insertedPairs(draft.program!, entity.fqn)) inserted.add(pair);
+    }
+    // Equalities with a session claim that the backend's own queries use are candidates too
+    // (e.g. userId = session.userId): a device then holds only what those queries return for it.
+    for (const set of guardSets) {
+      for (const pair of set) {
+        const property = entity.properties.get(pair.slice(0, pair.indexOf('=')));
+        if (property !== undefined && (property.type.type === 'uuid' || property.type.type === 'string') && !property.type.list) candidates.add(pair);
+      }
+    }
+    if (candidates.size === 0) {
+      out.set(entity.fqn, { public: false, filters: new Map(), reason: `${entity.decl.simple} has no property carrying a session claim (configure scopeClaims or publicEntities).` });
+      continue;
     }
     let chosen: ScopePair[];
     if (guardSets.length === 0) {

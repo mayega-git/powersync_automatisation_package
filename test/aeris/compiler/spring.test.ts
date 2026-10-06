@@ -245,8 +245,9 @@ describe('AERIS annotations', () => {
 
   it('declares scope columns with @AerisScope', async () => {
     const scoped = ENTITY.replace('private UUID organizationId;', '@io.aeris.annotations.AerisScope("organizationId") private UUID organizationId;');
-    const withoutAnnotation = await compileJava(SOURCES, { scopeClaims: {} });
-    expect(withoutAnnotation.projections.find((candidate) => candidate.entity === ENTITY_NAME)).toBeUndefined();
+    // Without configuration, the scope is inferred from the claim equalities the backend's queries use.
+    const inferred = await compileJava(SOURCES, { scopeClaims: {} });
+    expect(inferred.projections.find((candidate) => candidate.entity === ENTITY_NAME)?.scope.map((filter) => filter.field)).toEqual(['organizationId']);
     const artifact = await compileJava({ ...SOURCES, 'demo/points/Point.java': scoped }, { scopeClaims: {} });
     const projection = artifact.projections.find((candidate) => candidate.entity === ENTITY_NAME);
     expect(projection?.scope.map((filter) => filter.field)).toEqual(['organizationId']);
