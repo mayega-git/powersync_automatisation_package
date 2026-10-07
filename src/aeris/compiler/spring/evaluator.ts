@@ -164,7 +164,17 @@ export class Evaluator {
     if (target.cls === MUTABLE_LIST || target.cls === MUTABLE_SET) return { t: 'list', e: lit([]), elem: T.object, element: (item) => pure(item, T.object) };
     const jt = this.propertyType(target.cls, name);
     if (jt === undefined) throw new Unsupported(`${typeName({ name: target.cls, args: [], array: 0 })} has no property ${name}.`);
-    if (target.base !== undefined) return this.view(getf(target.base, name), jt);
+    if (target.base !== undefined) {
+      // The object is a database row, so only its stored columns have a value.
+      // Reading anything else would compile to a lookup the row cannot answer,
+      // and the device would quietly return null where the server computes
+      // something — a wrong answer is worse than a refused endpoint.
+      const entity = this.persistence.entities.get(target.cls);
+      if (entity !== undefined && !entity.properties.has(name)) {
+        throw new Unsupported(`${entity.decl.simple}.${name} is not a stored column: a row read from the database cannot answer it`);
+      }
+      return this.view(getf(target.base, name), jt);
+    }
     return defaultValue(jt);
   }
 
@@ -2203,7 +2213,12 @@ export class Evaluator {
           ...(orderBy.length > 0 ? { orderBy } : {}),
           ...(limit === undefined ? {} : { limit }),
         });
-        return { list: vr(out), element: (item: Expr) => obj(entity.fqn, new Map(), item, { entity: entity.fqn }) };
+        // Each element is a loaded row, exactly like a single-row read: the
+        // transient initialisers and the AfterConvert callbacks run on it too.
+        // Viewing it as a bare row left `Persistable#isNew` and every other
+        // transient unanswered, and a device returned null where the server
+        // computed a value.
+        return { list: vr(out), element: (item: Expr) => this.loaded(item, entity, scope, node) };
       },
     };
   }

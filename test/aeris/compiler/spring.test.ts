@@ -197,6 +197,10 @@ describe('Spring Boot compiler', () => {
     expect(foreign.status).toBe(404);
     const list = await run(artifact, 'GET /api/points', { [ENTITY_NAME]: [row(POINT, ORG, 'Zeta'), row('cccccccc-cccc-4ccc-8ccc-cccccccccccc', ORG, 'Alpha')] }, { context: { organizationId: ORG } });
     expect((list.body as { name: string }[]).map((item) => item.name)).toEqual(['Alpha', 'Zeta']);
+    // Every element of a list is a loaded row too: the AfterConvert callback runs
+    // on it, so `isNew` answers like the server instead of coming back null.
+    expect((list.body as { new: boolean; newEntity: boolean }[]).map((item) => [item.new, item.newEntity]))
+      .toEqual([[false, false], [false, false]]);
   });
 
   it('creates with validation, captured ids and clock, and an id mapping for the receipt', async () => {

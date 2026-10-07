@@ -35,17 +35,6 @@ Les raisons exactes et leur fréquence sont dans `aeris-report.html`. Principale
   les tests différentiels, jamais exécutées telles quelles.
 - **Écritures par élément** (`saveAll`, `flatMap(repo::save)`) : étendre `EACH` aux
   écritures demande des identifiants capturés par élément et un `idMap` indexé.
-- **Champ de réponse dont la valeur n'est pas déterminable** : le compilateur le sérialise
-  à `null` au lieu de refuser l'endpoint. Trouvé par le différentiel sur un backend vivant :
-  une entité `Persistable` expose `isNew()` à Jackson, le serveur répond `false`, AERIS
-  `null`. Le correctif côté backend est de ne pas exposer son état de persistance, mais la
-  règle doit être côté compilateur : une valeur qu'il ne sait pas calculer rend l'endpoint
-  non reproductible, exactement comme une métadonnée de requête.
-- **Tri sur une colonne non unique** : `ORDER BY name` sans départage laisse l'ordre des
-  ex æquo indéterminé côté serveur, alors que l'exécution locale départage par la clé. Les
-  deux réponses divergent dès qu'il y a égalité. Le compilateur lit déjà les contraintes
-  `UNIQUE` avec `--database` : il devrait s'en servir pour refuser, ou exiger un tri total.
-
 - **Lecture d'un enfant par sa propre clé** : désormais prouvée (voir `compilateur.md`),
   mais seulement quand la garde est une assertion et que l'absence de l'enfant et le
   parent hors périmètre lèvent la **même** erreur. Un backend qui nomme lequel des deux a

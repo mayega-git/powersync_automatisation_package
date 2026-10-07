@@ -148,6 +148,25 @@ révèle à l'appelant qu'une ligne qu'il n'a pas le droit de voir existe. Le co
 refuse exactement ceux-là. Enfin, rien ne peut être écrit avant que le parent soit
 prouvé, sinon le serveur aurait écrit pour un enfant que l'appareil, lui, a refusé.
 
+### Ce qu'une réponse locale n'a pas le droit d'inventer
+
+Deux règles, toutes deux trouvées par le différentiel contre un backend qui tourne.
+
+**Une ligne de base ne répond que de ses colonnes.** Lire sur une entité chargée une
+propriété qui n'est pas stockée (un champ `@Transient`, un accesseur dérivé) compilait un
+accès que la ligne ne peut pas satisfaire : l'appareil renvoyait `null` là où le serveur
+calcule une valeur. C'est désormais refusé. Les initialiseurs transients et les
+`AfterConvertCallback` s'appliquent en revanche à **chaque élément d'une liste**, comme à
+une ligne seule — ils ne l'étaient pas, d'où la divergence sur `Persistable#isNew`.
+
+**Une séquence ne vaut que si le serveur la fixe.** Un `ORDER BY` qui laisse des ex æquo,
+ou une lecture sans tri, ne promet rien sur l'ordre des lignes égales : PostgreSQL les
+réordonne volontiers après une mise à jour. L'endpoint n'est pas refusé pour autant — le
+tenir à un ordre que le backend ne garantit pas ne testerait rien. Il est marqué
+`partialOrder`, sa raison dit quoi ajouter au tri pour rendre la séquence contractuelle,
+et toute comparaison traite alors la liste comme un **ensemble**. Trier aussi sur la clé
+(ou sur une colonne `UNIQUE NOT NULL`, lue via `--database`) rend l'ordre opposable.
+
 ## Sorties (`.aeris/`)
 
 - `aeris-artifact.json` : l'IR complet (endpoints, programmes, projections, vecteurs de test).

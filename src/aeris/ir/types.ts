@@ -348,6 +348,14 @@ export interface EndpointPlan {
    * abandoned without effects and the request goes to the server.
    */
   opaqueFailures?: readonly string[];
+  /**
+   * The answer contains a list whose order the server does not settle: it reads
+   * rows ordered by nothing, or by columns that leave ties. Rows that compare
+   * equal may come back in any order, so the sequence is not part of what the
+   * backend promises and a comparison must treat such a list as a set. The
+   * reason says which read and what to order by to make the sequence binding.
+   */
+  partialOrder?: boolean;
   offlineClass: OfflineClass;
   reasons: readonly string[];
   freshness: Freshness;

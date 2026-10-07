@@ -65,7 +65,9 @@ export function assemble(input: AssembleInput): AerisArtifact {
     const broken = [...new Set([...draftIn.reads, ...draftIn.writes])].map((entity) => input.unavailableEntities?.get(entity)).find((problem) => problem !== undefined);
     const checked = serverCheckedWrites(draftIn, entities, input.constraints);
     const draft = checked.length === 0 ? draftIn : { ...draftIn, speculative: [...draftIn.speculative, `The database checks ${checked.join(', ')} (foreign key, unique or check constraints): only the server can validate these writes.`] };
-    plans.push(broken === undefined ? classify(draft, scopes, entities, config) : classify({ ...draft, program: undefined, unsupported: broken }, scopes, entities, config));
+    plans.push(broken === undefined
+      ? classify(draft, scopes, entities, config, input.constraints)
+      : classify({ ...draft, program: undefined, unsupported: broken }, scopes, entities, config, input.constraints));
   }
 
   // Projections only for entities a locally executable endpoint needs (data minimization).
@@ -265,7 +267,13 @@ function projectionOf(entity: EntityModel, scope: EntityScope, constraints?: Rea
 // Classification
 // ---------------------------------------------------------------------------
 
-function classify(draftIn: EndpointDraft, scopes: ReadonlyMap<string, EntityScope>, entities: ReadonlyMap<string, EntityModel>, config: CompilerConfig): EndpointPlan {
+function classify(
+  draftIn: EndpointDraft,
+  scopes: ReadonlyMap<string, EntityScope>,
+  entities: ReadonlyMap<string, EntityModel>,
+  config: CompilerConfig,
+  constraints?: ReadonlyMap<string, ReadonlyMap<string, ColumnConstraints>>,
+): EndpointPlan {
   const gates = config.requestGates.filter((gate) => gate.paths.some((pattern) => globMatch(pattern, draftIn.path))).map((gate) => gate.policy);
   const draft = gates.length === 0 ? draftIn : { ...draftIn, auth: { ...draftIn.auth, policies: [...(draftIn.auth.policies ?? []), ...gates] } };
   const base = {
@@ -312,6 +320,7 @@ function classify(draftIn: EndpointDraft, scopes: ReadonlyMap<string, EntityScop
     const unmet = unrestricted(guard, scopes, entities);
     if (unmet !== undefined) return offline('ONLINE_REQUIRED', [unmet]);
   }
+  const partialOrder = partiallyOrdered(program, entities, constraints);
   const scopeClaims = new Set([...draft.reads, ...draft.writes].flatMap((entity) => [...claimsOf(entity, scopes)]));
   const auth = { ...draft.auth, context: [...new Set([...draft.auth.context, ...scopeClaims])].sort() };
 
@@ -358,10 +367,11 @@ function classify(draftIn: EndpointDraft, scopes: ReadonlyMap<string, EntityScop
     auth,
     program,
     offlineClass,
-    reasons,
+    reasons: partialOrder === undefined ? reasons : [...reasons, partialOrder],
     unresolved: [],
     freshness: { maxAgeSeconds: config.freshness[offlineClass] },
     ...(sync === undefined ? {} : { sync }),
+    ...(partialOrder === undefined ? {} : { partialOrder: true }),
   };
 }
 
@@ -397,6 +407,49 @@ function serverCheckedWrites(draft: EndpointDraft, entities: ReadonlyMap<string,
 const keyMaps = new WeakMap<ReadonlyMap<string, EntityModel>, Map<string, string>>();
 
 /** Key property of each entity (memoized per entity map). */
+/**
+ * Why a list the program returns could come back in a different order from the
+ * server, or `undefined` when it cannot.
+ *
+ * Rows only have a defined order when the ORDER BY settles every tie, and SQL
+ * promises nothing about rows that compare equal — PostgreSQL will happily
+ * reorder them after an update. Local execution, having to be deterministic,
+ * settles ties by the key, so the two sides disagree exactly when ties exist.
+ * A total order means ordering on the key, or on a column the database keeps
+ * unique and not null.
+ */
+function partiallyOrdered(
+  program: readonly Instr[],
+  entities: ReadonlyMap<string, EntityModel>,
+  constraints?: ReadonlyMap<string, ReadonlyMap<string, ColumnConstraints>>,
+): string | undefined {
+  let reason: string | undefined;
+  const visit = (block: readonly Instr[]): void => {
+    for (const instr of block) {
+      if (instr.op === 'IF') { visit(instr.then); visit(instr.else); continue; }
+      if (instr.op === 'TRY') { visit(instr.body); visit(instr.fallback); continue; }
+      if (instr.op === 'EACH') { visit(instr.body); continue; }
+      if (instr.op !== 'QUERY' || instr.mode !== 'many' || reason !== undefined) continue;
+      const entity = entities.get(instr.entity);
+      if (entity === undefined) continue;
+      const columns = constraints?.get(instr.entity);
+      const settles = (field: string): boolean => {
+        if (field === entity.key) return true;
+        const column = entity.properties.get(field)?.column;
+        const constraint = column === undefined ? undefined : columns?.get(column);
+        return constraint?.notNull === true && constraint.serverChecked.includes('UNIQUE');
+      };
+      if ((instr.orderBy ?? []).some((order) => settles(order.field))) continue;
+      const ordered = (instr.orderBy ?? []).map((order) => order.field).join(', ');
+      reason = ordered.length === 0
+        ? `A list of ${entity.decl.simple} is read without an order, so rows may come back in any order: equal rows are compared as a set, not in sequence. Order by ${entity.key} to make the sequence part of the contract.`
+        : `A list of ${entity.decl.simple} is ordered by ${ordered}, which leaves ties unsettled: rows that compare equal may come back in any order. Order by ${entity.key} as well to make the sequence part of the contract.`;
+    }
+  };
+  visit(program);
+  return reason;
+}
+
 /**
  * Why a query's server result can include rows the device does not hold, or
  * `undefined` when it cannot. A claim-scoped entity needs the equality the

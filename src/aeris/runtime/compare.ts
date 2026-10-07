@@ -25,7 +25,10 @@ export function compareResults(
   if (local.status !== server.status) differences.push(`status: local ${local.status}, server ${server.status}`);
   const isError = local.status >= 400 || server.status >= 400;
   if (!isError || options.errorBodies === true) {
-    const ordered = programOrders(plan.program ?? []);
+    // A sequence only counts when the server settles it. An ORDER BY that
+    // leaves ties promises nothing about rows that compare equal, so holding
+    // the backend to one of its own possible orders would test nothing.
+    const ordered = programOrders(plan.program ?? []) && plan.partialOrder !== true;
     compareValue(local.body, server.body, '$', differences, {
       ordered,
       generated: options.generated ?? new Set(),
