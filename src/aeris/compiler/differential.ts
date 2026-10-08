@@ -177,6 +177,25 @@ interface Request {
   body?: JsonValue;
 }
 
+/**
+ * The entity a path variable actually identifies. `reads` is sorted, so taking
+ * its first element fed `/api/tasks/{taskId}` the id of a *board*: both sides
+ * answered 404, identical and worth nothing. The variable's own name says which
+ * entity it keys, so `taskId` draws from Task, and the first read is only a
+ * fallback when nothing matches.
+ */
+function keyedEntity(param: string, reads: readonly string[]): string | undefined {
+  const wanted = param.toLowerCase().replace(/id$/, '');
+  if (wanted.length > 0) {
+    const named = reads.find((entity) => {
+      const simple = entity.split('.').at(-1)!.toLowerCase();
+      return simple === wanted || simple.startsWith(wanted) || wanted.startsWith(simple);
+    });
+    if (named !== undefined) return named;
+  }
+  return reads[0];
+}
+
 async function requestsFor(
   plan: EndpointPlan,
   rows: Record<string, Record<string, JsonValue>[]>,
@@ -204,7 +223,7 @@ async function requestsFor(
   }
   const name = paramNames[0]!;
   const type = plan.input.params[name]!;
-  const entity = plan.reads[0];
+  const entity = keyedEntity(name, plan.reads);
   const projection = entity === undefined ? undefined : projections.get(entity);
   if (projection === undefined) return { requests: [], skip: 'no entity to draw keys from' };
   const keyType = projection.columns.find((column) => column.name === projection.key)!.type.type;
