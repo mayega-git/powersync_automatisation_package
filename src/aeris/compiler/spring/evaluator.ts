@@ -2032,9 +2032,18 @@ export class Evaluator {
     const simple = fqn.slice(fqn.lastIndexOf('.') + 1);
     const source = this.config.context.sources.find((candidate) => candidate.method === `${simple}.${name}` || candidate.method === `${fqn}.${name}`);
     if (source === undefined) return undefined;
+    // A holder may be reactive (`Mono<UUID> getTenantId()`) or blocking (`UUID
+    // getTenantId()`, typically a ThreadLocal filled by a servlet filter). The
+    // claim is the same either way; only its wrapper differs, so the declared
+    // return type decides and a handler written either way compiles.
+    const owner = this.project.type(fqn) ?? [...(this.project.bySimple.get(simple) ?? [])][0];
+    const declared = owner === undefined ? undefined : this.project.methodsOf(owner, name).find((method) => method.params.length === 0);
+    const reactive = declared === undefined || declared.returnType.name === 'reactor.core.publisher.Mono';
     if (source.kind === 'claim') {
       const claim = source.claim!;
-      return { t: 'mono', elem: T.uuid, run: () => ({ value: pure({ k: 'ctx', name: claim }, T.uuid), empty: op('isNull', { k: 'ctx', name: claim }) }) };
+      const value = pure({ k: 'ctx', name: claim }, T.uuid);
+      if (!reactive) return value;
+      return { t: 'mono', elem: T.uuid, run: () => ({ value, empty: op('isNull', { k: 'ctx', name: claim }) }) };
     }
     if (source.kind === 'metadata') {
       // Request metadata the device does not have: present, so a handler that
@@ -2049,6 +2058,7 @@ export class Evaluator {
     for (const property of this.properties(type.fqn)) fields.set(property.name, pure({ k: 'ctx', name: property.name }, property.jt));
     const context = obj(type.fqn, fields);
     const jt: JType = { name: type.fqn, args: [], array: 0 };
+    if (!reactive) return source.kind === 'required' ? context : { t: 'optional', value: context, present: TRUE };
     if (source.kind === 'required') return { t: 'mono', elem: jt, run: () => ({ value: context, empty: FALSE }) };
     return { t: 'mono', elem: jt, run: () => ({ value: { t: 'optional', value: context, present: TRUE }, empty: FALSE }) };
   }

@@ -20,8 +20,21 @@ export async function detectConfig(rootDir: string, files: readonly SourceFile[]
   /** Session accessors returning one identifier, resolved once the records are known. */
   const claimCandidates: { method: string; payload: string }[] = [];
   for (const type of project.types.values()) {
+    // A holder backed by a ThreadLocal filled by a filter: not reactive, but
+    // the same thing -- the verified session, read without a parameter. Common
+    // in a backend migrated from Spring MVC, and what the ThreadLocal is
+    // *otherwise* is shared mutable state the compiler refuses, so leaving it
+    // undetected costs every handler that reads the session this way.
+    const threadLocals = type.fields
+      .filter((field) => /^(java\.lang\.)?ThreadLocal$/.test(field.type.name) && field.modifiers.has('static'))
+      .map((field) => field.name);
     for (const method of type.methods) {
       if (!method.modifiers.has('static') || method.params.length !== 0 || method.body === undefined) continue;
+      if (threadLocals.some((name) => new RegExp(`\\b${name}\\s*\\.\\s*get\\s*\\(`).test(method.body!.text))
+        && /^(java\.util\.UUID|java\.lang\.String)$/.test(method.returnType.name)) {
+        claimCandidates.push({ method: `${type.simple}.${method.name}`, payload: method.returnType.name });
+        continue;
+      }
       if (!/deferContextual|ReactiveSecurityContextHolder/.test(method.body.text)) continue;
       if (method.returnType.name !== 'reactor.core.publisher.Mono') continue;
       const payload = method.returnType.args[0];
@@ -83,10 +96,59 @@ export async function detectConfig(rootDir: string, files: readonly SourceFile[]
   if (inertCandidates.length > 0) {
     notes.push(`${inertCandidates.length} method(s) look like server-side bookkeeping and are proposed commented out under inertEffects: enable only those whose sole effect the server redoes when the operation is replayed.`);
   }
+  // A holder returning one identifier rather than the whole session
+  // (`getCurrentUserId(): Mono<UUID>`) is a `claim` source. Which claim it
+  // returns is read off a session record found in the same sources whenever
+  // there is one -- `getCurrentUserId` next to a `User` carrying `userId` is
+  // that proof. A backend that has no such record (its holder hands back only
+  // identifiers) leaves the accessor's own name as the only evidence, so the
+  // name is proposed and the note says to check it: a wrong claim here scopes
+  // every row by the wrong identity. An accessor returning something other
+  // than an identifier is never proposed -- a String may be a username, a
+  // role or a locale, and nothing in the sources says which.
+  const sessionClaims = new Map<string, string>();
+  for (const source of sources) {
+    if (source.kind === 'metadata' || source.type === undefined) continue;
+    const record = project.type(source.type);
+    if (record === undefined) continue;
+    for (const component of record.kind === 'record' ? record.recordComponents : record.fields) {
+      if (component.type.name === 'java.util.UUID') sessionClaims.set(component.name.toLowerCase(), component.name);
+    }
+  }
+  const proposedClaims: string[] = [];
+  for (const candidate of claimCandidates) {
+    const accessor = candidate.method.slice(candidate.method.indexOf('.') + 1);
+    const stripped = accessor.replace(/^(get|fetch|resolve|require)+/i, '').replace(/^(current|authenticated|connected|logged(In)?)/i, '');
+    // Only an identifier can restrict a row, so only an identifier is a claim
+    // here -- a record component named `locale` matches the accessor's name
+    // and is still not something a projection can be scoped by.
+    const known = candidate.payload === 'java.util.UUID' ? sessionClaims.get(stripped.toLowerCase()) : undefined;
+    if (known !== undefined) {
+      sources.push({ method: candidate.method, kind: 'claim', claim: known });
+      continue;
+    }
+    if (candidate.payload !== 'java.util.UUID' || stripped.length === 0) {
+      notes.push(`${candidate.method} returns a single ${candidate.payload.split('.').pop()} from the session, which is not an identifier: add it as a 'claim' source yourself if it is one.`);
+      continue;
+    }
+    const claim = stripped[0]!.toLowerCase() + stripped.slice(1);
+    sources.push({ method: candidate.method, kind: 'claim', claim });
+    proposedClaims.push(claim);
+  }
+  if (proposedClaims.length > 0) {
+    const named = [...new Set(proposedClaims)];
+    notes.push(`No session record in the sources, so ${named.map((claim) => `'${claim}'`).join(', ')} ${named.length === 1 ? 'is a claim name' : 'are claim names'} read off the accessor names: confirm each one is the claim the backend really puts in the context.`);
+  }
+
   // The claims that can restrict a row are the session's own identifiers, read
-  // off the record the holder returns — not a vocabulary decided in advance.
+  // off the record the holder returns -- or off the claim sources when the
+  // backend has no record. Never a vocabulary decided in advance.
   const scopeClaims: Record<string, string[]> = {};
   for (const source of sources) {
+    if (source.kind === 'claim') {
+      scopeClaims[source.claim!] = [source.claim!];
+      continue;
+    }
     if (source.kind === 'metadata' || source.type === undefined) continue;
     const record = project.type(source.type);
     if (record === undefined) continue;
@@ -95,31 +157,6 @@ export async function detectConfig(rootDir: string, files: readonly SourceFile[]
     }
   }
   if (Object.keys(scopeClaims).length === 0) notes.push('No session identifier found: fill scopeClaims with the entity properties that restrict a row to a session.');
-
-  // A holder returning one identifier is a `claim` source, but only when the
-  // claim it returns is *proven*: its name has to match a component of a
-  // session record found above. `getCurrentUserId` next to a `User` carrying
-  // `userId` is that proof; anything else is reported, never guessed, because
-  // naming the wrong claim would scope every row by the wrong identity.
-  const sessionClaims = new Map<string, string>();
-  for (const source of sources) {
-    if (source.kind === 'metadata' || source.type === undefined) continue;
-    const record = project.type(source.type);
-    if (record === undefined) continue;
-    for (const component of record.kind === 'record' ? record.recordComponents : record.fields) {
-      sessionClaims.set(component.name.toLowerCase(), component.name);
-    }
-  }
-  for (const candidate of claimCandidates) {
-    const accessor = candidate.method.slice(candidate.method.indexOf('.') + 1);
-    const stripped = accessor.replace(/^(get|current|fetch|resolve|require)+/i, '').replace(/^(current|authenticated|connected|logged(In)?)/i, '');
-    const claim = sessionClaims.get(stripped.toLowerCase());
-    if (claim === undefined) {
-      notes.push(`${candidate.method} returns a single ${candidate.payload.split('.').pop()} from the session but no claim is named ${stripped || accessor}: add it as a 'claim' source yourself if it is one.`);
-      continue;
-    }
-    sources.push({ method: candidate.method, kind: 'claim', claim });
-  }
 
   const authentication = [...project.types.values()].find((type) =>
     type.kind === 'class' && type.superclass !== undefined && /AbstractAuthenticationToken$/.test(type.superclass.name));
