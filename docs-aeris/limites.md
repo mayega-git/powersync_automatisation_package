@@ -26,6 +26,20 @@ Les raisons exactes et leur fréquence sont dans `aeris-report.html`. Principale
 - Pagination (`Pageable`, `Sort` dynamiques).
 - `WebFilter` globaux : non analysés, à déclarer en `requestGates` s'ils peuvent rejeter.
 
+## Décision en attente : `LOCAL_WRITE_SAFE`
+
+La classe existe dans la taxonomie mais le compilateur ne la **calcule jamais** : elle n'est
+atteignable que par un `override` ou `@AerisOffline` promouvant un `REPLAYABLE` déjà prouvé,
+et le runtime ne s'y branche nulle part — seule la fraîcheur par défaut diffère. Elle est donc
+aujourd'hui une étiquette sans effet.
+
+Lui donner son sens (« la réponse locale est définitive, pas provisoire ») demanderait de
+**prouver que le serveur ne peut pas refuser** l'écriture : pas de contrainte vérifiée côté
+base, pas de validation serveur, pas de révocation d'autorisation entre-temps. Tant que cette
+preuve n'est pas faite, la promouvoir ferait présenter comme définitive une écriture encore
+refusable — exactement ce qu'AERIS s'interdit. Elle reste donc équivalente à `REPLAYABLE`,
+et c'est un choix, pas un oubli.
+
 ## Extensions prévues par l'architecture
 
 - **Autres frameworks** : l'IR et le runtime sont indépendants du langage ; un adaptateur
