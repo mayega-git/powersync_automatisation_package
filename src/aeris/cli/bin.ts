@@ -25,7 +25,7 @@ Commands:
                                     Compare two artifacts (CI gate: offline endpoints that regressed)
   publish --artifact f --sign key.pem --key-id id [--out f]
   verify <signed.json> --public-key f [--key-id id]
-  test --artifact f --backend <url> --database <postgres-url> --token <bearer> [--claims json] [--only glob] [--writes]
+  test --artifact f --backend <url> --database <postgres-url> (--token <bearer> | --headers json) [--claims json] [--only glob] [--writes]
                                     Differential test: local executor vs. the real backend
   gateway --config <gateway.yaml>   Start the Sync Gateway
 `;
@@ -199,11 +199,20 @@ async function main(argv: readonly string[]): Promise<number> {
     }
     case 'test': {
       const { runDifferential } = await import('../compiler/differential.js');
+      // A bearer token is one way to authenticate, not the only one: plenty of
+      // backends read an API key, a tenant header or a gateway-trusted header,
+      // and requiring --token locked them out of the comparison entirely.
+      const token = option(options, 'token');
+      const rawHeaders = option(options, 'headers');
+      if (token === undefined && rawHeaders === undefined) {
+        throw new Error('test needs --token <bearer> or --headers \'{"x-api-key":"…"}\' to authenticate the session.');
+      }
       const summary = await runDifferential({
         artifact: await loadArtifact(required(options, 'artifact')),
         backendUrl: required(options, 'backend'),
         databaseUrl: required(options, 'database'),
-        token: required(options, 'token'),
+        ...(token === undefined ? {} : { token }),
+        ...(rawHeaders === undefined ? {} : { headers: JSON.parse(rawHeaders) as Record<string, string> }),
         ...(option(options, 'claims') === undefined ? {} : { claims: JSON.parse(option(options, 'claims')!) as Record<string, string> }),
         ...(option(options, 'only') === undefined ? {} : { only: option(options, 'only')! }),
         writes: options.writes === true,

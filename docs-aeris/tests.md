@@ -49,6 +49,17 @@ npx aeris test --artifact .aeris/aeris-artifact.json \
   --only '* /api/sales-points**'
 ```
 
+Un jeton porteur n'est qu'une façon de s'authentifier. Un backend qui lit une clé d'API,
+un en-tête de tenant ou un en-tête posé par un proxy de confiance se déclare avec
+`--headers` à la place (ou en plus) :
+
+```bash
+npx aeris test --artifact .aeris/aeris-artifact.json \
+  --backend http://127.0.0.1:18090 --database postgres://… \
+  --headers '{"x-workspace-id":"…","x-member-id":"…"}' \
+  --claims '{"workspaceId":"…","memberId":"…"}'
+```
+
 Pour chaque endpoint local, le harnais charge le snapshot réel de la session depuis
 PostgreSQL, choisit des clés réelles (dans le périmètre, hors périmètre, inexistantes),
 exécute le programme localement (transaction annulée) et appelle le backend avec les

@@ -11,3 +11,4 @@ EXEMPLE-INSTALLATION-BACKEND.md
 .~lock.*#
 test-backends/*/target
 graphify-out/
+test-backends/*/.aeris/
