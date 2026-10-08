@@ -49,6 +49,7 @@ docker run -d --name taskly-pg -e POSTGRES_USER=taskly -e POSTGRES_PASSWORD=task
 npm run corpus:build                       # mvn package
 java -jar test-backends/taskly/target/taskly-0.0.1.jar &
 npm run corpus:differential                # lectures ET écritures
+npm run corpus:e2e                         # hors ligne -> rejeu -> convergence
 ```
 
 La session est portée par des en-têtes (`x-workspace-id`, `x-member-id`), comme le mode
@@ -64,6 +65,15 @@ le rejoue à chaque poussée.
 
 Une divergence ici est le signal le plus fort du projet : soit le compilateur a mal
 modélisé quelque chose, soit le backend ne fait pas ce qu'il prétend.
+
+`corpus:e2e` va plus loin que la comparaison de réponses : il fait tourner la Gateway, le
+runtime et l'application ensemble. Une écriture hors ligne part dans l'outbox, puis une
+seconde opération est créée **sur le tableau que la première crée** — elle porte donc un
+identifiant qui n'existe côté serveur qu'après le rejeu de la première. Au retour du réseau,
+il vérifie que les deux sont rejouées dans l'ordre, que la tâche atteint le serveur en
+pointant sur l'identifiant *du serveur*, que l'appareil abandonne les identifiants qu'il
+avait inventés, et qu'un second rejeu n'écrit rien de plus. C'est la machinerie qu'aucune
+fixture n'exerce.
 
 ## Ce qu'il a trouvé en devenant exécutable
 

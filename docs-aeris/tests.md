@@ -20,6 +20,17 @@ chaîne entière à chaque poussée, plus `npm run build`.
 | Unitaires | `npm test` | IR (validation, signatures), exécuteur, trois stores (même suite de conformité), runtime (hors ligne, remapping, dépendances, conflits, rejeu, rebase, coupe-circuit, fraîcheur, purge, downgrade), politiques, intégration navigateur, compilateur (projets Spring de référence) |
 | Intégration | `npm run test:integration` | Gateway + runtime + backend factice sur PostgreSQL réel : exactement-une-fois, refus du proxy ouvert, deltas ordonnés sous commits concurrents, sortie de périmètre |
 | Différentiels | `aeris test …` | Même requête, mêmes données : exécuteur local vs backend réel |
+| Corpus, différentiel | `npm run corpus:differential` | Les 15 endpoints du second backend, lectures **et** écritures, contre l'application Spring qui tourne |
+| Corpus, bout en bout | `npm run corpus:e2e` | Écriture hors ligne → outbox → réconciliation → remappage d'identifiants → convergence, contre cette même application |
+
+Les deux dernières sont les seules à confronter le système à une **vraie** application Spring
+Boot plutôt qu'à une fixture. Le différentiel compare des réponses ; le test de bout en bout
+fait tourner la machinerie que rien d'autre n'exerce — l'outbox, l'ordre des opérations
+dépendantes, le remappage des identifiants choisis par l'appareil, et la convergence. Sa
+seconde opération est créée **sur le tableau que la première crée**, donc elle porte un
+identifiant qui n'existe côté serveur qu'après le rejeu de la première. `AERIS_REQUIRE_CORPUS=1`
+y joue le même rôle que `AERIS_REQUIRE_INTEGRATION=1` ailleurs : sans backend, c'est un échec,
+pas un silence. Le job CI `differential` enchaîne les deux à chaque poussée.
 
 PostgreSQL jetable pour l'intégration :
 

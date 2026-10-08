@@ -10,3 +10,4 @@ EXEMPLE-INSTALLATION-BACKEND.md
 .scratch/
 .~lock.*#
 test-backends/*/target
+graphify-out/

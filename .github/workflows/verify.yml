@@ -124,5 +124,10 @@ jobs:
       - name: Compiled programs answer like the backend, reads and writes
         run: npm run corpus:differential
 
+      # The outbox, the ordering of dependent operations, the identifier
+      # remapping and the convergence only meet a real backend here.
+      - name: Offline write, replay and convergence against the real backend
+        run: npm run corpus:e2e
+
       - if: failure()
         run: cat taskly.log
