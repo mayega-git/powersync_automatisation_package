@@ -20,6 +20,7 @@ import {
   decimalSetScale,
   decimalSub,
   formatNow,
+  isIsoTemporal,
   javaStrip,
   type RoundingMode,
   normalizeStored,
@@ -670,6 +671,21 @@ class Frame {
         const pattern = javaRegex(str(b));
         if (expr.op === 'matches') return new RegExp(`^(?:${pattern})$`, 'u').test(str(a));
         return str(a).replace(new RegExp(pattern, 'gu'), str(values[2] ?? null));
+      }
+      case 'isoTemporal':
+        // Guards a parse: false means the backend raises DateTimeParseException.
+        return a !== null && isIsoTemporal(str(a), str(b) as 'local-date' | 'local-datetime');
+      case 'split': {
+        // String.split(separator), i.e. Pattern.split with limit 0. Java returns
+        // the whole input when the separator never matches -- so "".split(",")
+        // is [""], not [] -- and otherwise drops the trailing empty parts.
+        const text = str(a);
+        const separator = str(b);
+        if (!text.includes(separator)) return [text];
+        const parts = text.split(separator);
+        let size = parts.length;
+        while (size > 0 && parts[size - 1] === '') size -= 1;
+        return parts.slice(0, size);
       }
       case 'append': {
         if (!Array.isArray(a)) throw new AerisHttpError(500, 'NULL_DEREFERENCE', 'add() on a non-list value.');

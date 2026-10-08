@@ -166,6 +166,27 @@ function padLocal(text: string): string {
   return `${date}T${full}.${fraction.padEnd(9, '0')}`;
 }
 
+const ISO_LOCAL_DATE = /^([+-]?\d{4,10})-(\d{2})-(\d{2})$/;
+const ISO_LOCAL_DATE_TIME = /^([+-]?\d{4,10})-(\d{2})-(\d{2})T([01]\d|2[0-3]):([0-5]\d)(?::([0-5]\d)(?:\.\d{1,9})?)?$/;
+
+/**
+ * Whether `text` is what `LocalDate.parse` / `LocalDateTime.parse` accept,
+ * calendar included: a regular expression alone would take 2026-02-31 for a
+ * date, and the backend answers 400 for it. Used by the ASSERT the compiler
+ * emits around a parse, so the local failure is the backend's failure.
+ */
+export function isIsoTemporal(text: string, kind: 'local-date' | 'local-datetime'): boolean {
+  const match = (kind === 'local-date' ? ISO_LOCAL_DATE : ISO_LOCAL_DATE_TIME).exec(text);
+  if (match === null) return false;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  if (!Number.isInteger(year) || month < 1 || month > 12 || day < 1) return false;
+  const leap = (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
+  const lengths = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  return day <= lengths[month - 1]!;
+}
+
 function sortKeys(value: JsonValue): JsonValue {
   if (Array.isArray(value)) return value.map(sortKeys);
   if (value !== null && typeof value === 'object') {

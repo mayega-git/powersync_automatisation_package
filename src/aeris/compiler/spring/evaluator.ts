@@ -1727,8 +1727,11 @@ export class Evaluator {
     }
     if (name === 'equals' && args.length === 1) this.fail(`${decl.simple}.equals() relies on identity or generated equality`, node, scope);
     // The configured Authentication is a verified session: Spring's inherited accessors are known.
-    if (decl.fqn === this.config.context.authentication && args.length === 0) {
+    const principal = this.config.context.authentication;
+    if (principal !== undefined && (decl.fqn === principal || decl.simple === principal) && args.length === 0) {
       if (name === 'isAuthenticated') return pure(TRUE, T.boolean);
+      // SecurityContext#getAuthentication and Authentication#getPrincipal: see securityContext().
+      if (name === 'getAuthentication' || name === 'getPrincipal') return target;
       if (name === 'getAuthorities') {
         const granted: JType = { name: 'org.springframework.security.core.GrantedAuthority', args: [], array: 0 };
         return { t: 'list', e: op('coalesce', { k: 'ctx', name: this.config.context.authoritiesClaim ?? 'authorities' }, lit([])), elem: granted, element: (item) => pure(item, granted) };
@@ -1776,6 +1779,12 @@ export class Evaluator {
       if (decl !== undefined) {
         const statics = this.project.methodsOf(decl, fn.name).filter((method) => method.modifiers.has('static') && method.params.length === args.length);
         if (statics.length > 0) return this.call({ t: 'type', fqn: type }, fn.name, args, node, inner);
+      }
+      // `MyEnum::valueOf` and `MyEnum::values` are implicit members: the sources
+      // never declare them, so methodsOf() cannot see them and the reference
+      // would be taken for an instance call on its first argument.
+      if (decl?.kind === 'enum' && (fn.name === 'valueOf' || fn.name === 'values')) {
+        return this.call({ t: 'type', fqn: type }, fn.name, args, node, inner);
       }
       if (args.length === 0) this.fail(`Unbound method reference ${type}::${fn.name} without receiver`, node, scope);
       const [firstIn, ...rest] = args;
@@ -1978,6 +1987,45 @@ export class Evaluator {
     const method = this.resolve(decl, name, args, node, scope);
     if (!method.modifiers.has('static') && method.synthetic?.kind !== 'builder') this.fail(`Instance method ${decl.simple}.${name} called statically`, node, scope);
     return this.inline(method, undefined, args, node, scope);
+  }
+
+  /**
+   * The configured Authentication, its fields bound to session claims of the
+   * same name. A property the projection cannot hold is opaque rather than
+   * invented, so forwarding it compiles and reading it does not.
+   */
+  authenticationValue(typeNameText: string, node: SyntaxNode): ObjSV {
+    const decl = this.project.type(typeNameText) ?? [...(this.project.bySimple.get(typeNameText) ?? [])][0];
+    if (decl === undefined) throw new Unsupported(`Authentication type ${typeNameText} is not in the sources`, node);
+    const fields = new Map<string, SV>();
+    for (const property of this.properties(decl.fqn)) {
+      fields.set(property.name, fieldTypeOf(this.project, property.jt) !== undefined
+        ? pure({ k: 'ctx', name: property.name }, property.jt)
+        : { t: 'opaque', what: `${decl.simple}.${property.name}` });
+    }
+    return obj(decl.fqn, fields);
+  }
+
+  /**
+   * `ReactiveSecurityContextHolder.getContext()`. A SecurityContext exposes
+   * nothing but its Authentication, which exposes nothing but the principal
+   * and its claims, so all three are one value here: the configured principal
+   * class. Spring's own accessors (`getAuthentication`, `getPrincipal`) are
+   * therefore the identity on it, see `objCall`.
+   *
+   * The holder is never empty on an authenticated request, but *whether* the
+   * request is authenticated is the backend's filter chain, not ours: without
+   * `context.authentication` naming the principal there is nothing to bind the
+   * claims to, and the handler stays online.
+   */
+  securityContext(node: SyntaxNode): SV {
+    const configured = this.config.context.authentication;
+    if (configured === undefined) {
+      throw new Unsupported('ReactiveSecurityContextHolder.getContext() needs context.authentication to name the principal class', node);
+    }
+    const value = this.authenticationValue(configured, node);
+    const jt: JType = { name: value.cls, args: [], array: 0 };
+    return { t: 'mono', elem: jt, run: () => ({ value, empty: FALSE }) };
   }
 
   private contextSource(fqn: string, name: string): SV | undefined {

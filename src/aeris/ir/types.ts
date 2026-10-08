@@ -89,14 +89,14 @@ export type ExprOp =
   | 'min' | 'max' | 'abs'
   | 'size' | 'first' | 'replace'
   | 'take' | 'strip' | 'setScale' | 'divide' | 'append'
-  | 'range' | 'replaceAll' | 'matches' | 'distinct' | 'at' | 'divideP' | 'roundP';
+  | 'range' | 'replaceAll' | 'matches' | 'distinct' | 'at' | 'divideP' | 'roundP' | 'split' | 'isoTemporal';
 
 export const EXPR_OPS: readonly ExprOp[] = [
   'eq', 'ne', 'lt', 'le', 'gt', 'ge', 'and', 'or', 'not', 'isNull', 'notNull',
   'add', 'sub', 'mul', 'div', 'neg', 'mod', 'concat', 'coalesce',
   'lower', 'upper', 'trim', 'length', 'isBlank', 'isEmpty',
   'startsWith', 'endsWith', 'contains', 'min', 'max', 'abs', 'size', 'first', 'replace',
-  'take', 'strip', 'setScale', 'divide', 'append', 'range', 'replaceAll', 'matches', 'distinct', 'at', 'divideP', 'roundP',
+  'take', 'strip', 'setScale', 'divide', 'append', 'range', 'replaceAll', 'matches', 'distinct', 'at', 'divideP', 'roundP', 'split', 'isoTemporal',
 ];
 
 /** java.math.RoundingMode names accepted by setScale / divide (as string literals). */

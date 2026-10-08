@@ -171,6 +171,11 @@ export function libraryStaticField(fqn: string, name: string): SV | undefined {
       return ['UP', 'DOWN', 'CEILING', 'FLOOR', 'HALF_UP', 'HALF_DOWN', 'HALF_EVEN', 'UNNECESSARY'].includes(name)
         ? pure(lit(name), { name: 'java.math.RoundingMode', args: [], array: 0 })
         : undefined;
+    case 'DateTimeFormatter':
+      // Only the ISO constants whose grammar is fixed; `ofPattern` stays online.
+      return name === 'ISO_LOCAL_DATE' || name === 'ISO_LOCAL_DATE_TIME'
+        ? pure(lit(`formatter:${name}`), { name: 'java.time.format.DateTimeFormatter', args: [], array: 0 })
+        : undefined;
     case 'Locale':
       return ['ROOT', 'ENGLISH', 'US', 'UK', 'FRENCH', 'FRANCE', 'GERMAN', 'CANADA', 'CANADA_FRENCH'].includes(name)
         ? pure(lit(`locale:${name}`), { name: 'java.util.Locale', args: [], array: 0 })
@@ -227,6 +232,26 @@ export function libraryStatic(ev: Evaluator, fqn: string, name: string, args: SV
     case 'OffsetDateTime':
     case 'ZonedDateTime': {
       const kind = TEMPORAL_NOW[fqn] ?? TEMPORAL_NOW[`java.time.${type}`];
+      // LocalDate.parse / LocalDateTime.parse, either in their one-argument
+      // form or with the matching ISO formatter -- which is what the
+      // one-argument form uses, so the two are the same program. The guard is
+      // a real parse, calendar included (`isoTemporal`), so a text the backend
+      // rejects is rejected here with the backend's own exception. Any other
+      // formatter has a grammar of its own and stays online.
+      if (name === 'parse' && (type === 'LocalDate' || type === 'LocalDateTime') && (args.length === 1 || args.length === 2)) {
+        const expected = type === 'LocalDate' ? 'local-date' : 'local-datetime';
+        const formatter = args.length === 2 ? arg(1) : undefined;
+        const iso = type === 'LocalDate' ? 'formatter:ISO_LOCAL_DATE' : 'formatter:ISO_LOCAL_DATE_TIME';
+        if (formatter !== undefined && !(formatter.k === 'lit' && formatter.v === iso)) break;
+        const text = arg(0);
+        scope.block.emit({ op: 'ASSERT', test: op('notNull', text), error: ev.errors.map({ t: 'exception', cls: 'java.lang.NullPointerException', message: lit('text') }) });
+        scope.block.emit({
+          op: 'ASSERT',
+          test: op('isoTemporal', text, lit(expected)),
+          error: ev.errors.map({ t: 'exception', cls: 'java.time.format.DateTimeParseException', message: op('concat', op('concat', lit("Text '"), text), lit("' could not be parsed at index 0")) }),
+        });
+        return pure(text, { name: `java.time.${type}`, args: [], array: 0 });
+      }
       if (name === 'now' && args.length === 0 && kind !== undefined) {
         if ((type === 'OffsetDateTime' || type === 'ZonedDateTime') && ev.config.serverTimeZone !== 'UTC') {
           throw new Unsupported(`${type}.now() serializes the server offset; only UTC servers are modeled`, node);
@@ -235,6 +260,9 @@ export function libraryStatic(ev: Evaluator, fqn: string, name: string, args: SV
       }
       break;
     }
+    case 'ReactiveSecurityContextHolder':
+      if (name === 'getContext' && args.length === 0) return ev.securityContext(node);
+      break;
     case 'Objects':
       if (name === 'equals' && args.length === 2) return pure(op('eq', arg(0), arg(1)), T.boolean);
       if (name === 'isNull' && args.length === 1) return pure(op('isNull', arg(0)), T.boolean);
@@ -604,6 +632,31 @@ export function libraryInstance(ev: Evaluator, receiver: SV, name: string, args:
   throw new Unsupported(`${receiver.t}.${name}/${args.length} is not modeled`, node);
 }
 
+/**
+ * The plain separator a `split()` pattern stands for, or undefined when the
+ * pattern is a real regular expression. Only a literal separator is modeled:
+ * a pattern that can match nothing brings Java's own exceptions to the rule
+ * (no empty leading part for a zero-width match at index 0), and guessing
+ * them would be worse than staying online.
+ */
+function literalSeparator(pattern: string): string | undefined {
+  const meta = '\\.[]{}()*+?^$|';
+  let out = '';
+  for (let index = 0; index < pattern.length; index += 1) {
+    const character = pattern[index]!;
+    if (character === '\\') {
+      const escaped = pattern[index + 1];
+      if (escaped === undefined || !meta.includes(escaped)) return undefined;
+      out += escaped;
+      index += 1;
+      continue;
+    }
+    if (meta.includes(character)) return undefined;
+    out += character;
+  }
+  return out.length > 0 ? out : undefined;
+}
+
 function valueMethod(ev: Evaluator, receiver: SV & { t: 'pure' }, name: string, args: SV[], node: SyntaxNode): SV {
   const self = receiver.e;
   // A constant string seen through a wider static type (Object varargs): String.toString() is the identity.
@@ -642,6 +695,13 @@ function valueMethod(ev: Evaluator, receiver: SV & { t: 'pure' }, name: string, 
           const replacement = arg(1);
           if (replacement.k !== 'lit' || typeof replacement.v !== 'string' || replacement.v.includes('\\')) break;
           return pure(op('replaceAll', self, regex, replacement), T.string);
+        }
+        case 'split/1': {
+          const pattern = arg(0);
+          if (pattern.k !== 'lit' || typeof pattern.v !== 'string') break;
+          const separator = literalSeparator(pattern.v);
+          if (separator === undefined) break;
+          return { t: 'list', e: op('split', self, lit(separator)), elem: T.string, element: (item) => pure(item, T.string) };
         }
         case 'replace/2': {
           const target = args[0];

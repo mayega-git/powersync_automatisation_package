@@ -390,7 +390,7 @@ function bindParameters(
       if (valid !== undefined) validations.push(() => validate(ev, context, dto, [], scope, speculative, 0));
       args.push(dto);
     } else if (AUTHENTICATION_PARAMETERS.has(typeName(param.type)) && context.config.context.authentication !== undefined) {
-      args.push(authenticationObject(ev, context, context.config.context.authentication));
+      args.push(ev.authenticationValue(context.config.context.authentication, param.node ?? method.node));
     } else if (typeName(param.type) === 'ServerHttpRequest') {
       args.push({ t: 'opaque', what: `ServerHttpRequest ${param.name}`, path: pathExpression(path) });
     } else if (OPAQUE_PARAMETERS.has(typeName(param.type)) || annotation('AuthenticationPrincipal') !== undefined) {
@@ -405,18 +405,6 @@ function bindParameters(
 }
 
 const AUTHENTICATION_PARAMETERS = new Set(['Authentication', 'AbstractAuthenticationToken']);
-
-/** The configured Authentication class, its fields bound to session claims of the same name. */
-function authenticationObject(ev: Evaluator, context: CompileContext, typeNameText: string): SV {
-  const decl = context.project.type(typeNameText) ?? [...(context.project.bySimple.get(typeNameText) ?? [])][0];
-  if (decl === undefined) throw new Unsupported(`Authentication type ${typeNameText} is not in the sources`);
-  const fields = new Map<string, SV>();
-  for (const property of ev.properties(decl.fqn)) {
-    if (fieldTypeOf(context.project, property.jt) !== undefined) fields.set(property.name, pure({ k: 'ctx', name: property.name }, property.jt));
-    else fields.set(property.name, { t: 'opaque', what: `${decl.simple}.${property.name}` });
-  }
-  return obj(decl.fqn, fields);
-}
 
 /** The concrete request path for a route template, built from its path variables. */
 function pathExpression(template: string): Expr {
