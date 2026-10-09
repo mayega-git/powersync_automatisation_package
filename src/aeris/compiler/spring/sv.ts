@@ -306,6 +306,20 @@ export interface CriteriaSV {
   isQuery: boolean;
 }
 
+/**
+ * A Reactor Context under construction (`Context.empty().put(k, v)`).
+ *
+ * It is kept as a value rather than ignored because `contextWrite` decides what
+ * the code downstream of it reads as *the session*. Writing the session back
+ * under its own names changes nothing and is waved through; writing anything
+ * else would make the local answer and the backend's disagree about who is
+ * calling, so it stays online.
+ */
+export interface ContextMapSV {
+  t: 'ctxmap';
+  entries: { key: string; value: SV }[];
+}
+
 /** java.util.Comparator built from comparing()/reversed()/thenComparing(). */
 export interface ComparatorSV {
   t: 'comparator';
@@ -341,7 +355,7 @@ export interface ResponsesSV {
 export type SV =
   | PureSV | ObjSV | BuilderSV | MonoSV | FluxSV | OptionalSV | ListSV | LambdaSV | MethodRefSV
   | BeanSV | RepoSV | TypeSV | ExceptionSV | TupleSV | VoidSV | ResponseSV | ResponsesSV | ExternalSV | LoggerSV | TxOperatorSV
-  | OpaqueSV | TemplateSV | CriteriaSV | SortSV | ComparatorSV;
+  | OpaqueSV | TemplateSV | CriteriaSV | SortSV | ComparatorSV | ContextMapSV;
 
 /** The responses a value can be, each with the condition under which it is chosen. */
 export function responseCases(value: ResponseSV | ResponsesSV, test: Expr = TRUE): { test: Expr; response: ResponseSV }[] {

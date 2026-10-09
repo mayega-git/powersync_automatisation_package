@@ -415,6 +415,22 @@ export function libraryStatic(ev: Evaluator, fqn: string, name: string, args: SV
         return { t: 'comparator', keys: base.keys.map((key) => ({ ...key, nulls: name === 'nullsLast' ? 'last' as const : 'first' as const })) };
       }
       break;
+    case 'Context':
+      // Reactor Context construction. Keys have to be literals, because the
+      // check `contextWrite` performs is per key.
+      if (name === 'empty' && args.length === 0) return { t: 'ctxmap', entries: [] };
+      if (name === 'of' && args.length >= 2 && args.length % 2 === 0) {
+        const entries: { key: string; value: SV }[] = [];
+        for (let index = 0; index < args.length; index += 2) {
+          const key = args[index]!;
+          if (key.t !== 'pure' || key.e.k !== 'lit' || typeof key.e.v !== 'string') {
+            throw new Unsupported('Context.of() with a key that is not a constant', node);
+          }
+          entries.push({ key: key.e.v, value: args[index + 1]! });
+        }
+        return { t: 'ctxmap', entries };
+      }
+      break;
     case 'TransactionalOperator':
       if (name === 'create') return { t: 'txop' };
       break;
@@ -770,11 +786,31 @@ function valueMethod(ev: Evaluator, receiver: SV & { t: 'pure' }, name: string, 
     case 'java.time.Instant':
     case 'java.time.LocalDate':
     case 'java.time.OffsetDateTime':
-    case 'java.time.ZonedDateTime':
+    case 'java.time.ZonedDateTime': {
+      // Calendar arithmetic. Only the units each type really declares: a
+      // LocalDate has no hours, an Instant has no months, and a ZonedDateTime
+      // crosses daylight-saving rules no row carries -- so those stay online.
+      const units: Record<string, string> = {
+        Days: 'days', Weeks: 'weeks', Months: 'months', Years: 'years',
+        Hours: 'hours', Minutes: 'minutes', Seconds: 'seconds',
+      };
+      const shift = /^(plus|minus)(Days|Weeks|Months|Years|Hours|Minutes|Seconds)$/.exec(name);
+      if (shift !== null && args.length === 1) {
+        const unit = units[shift[2]!]!;
+        const allowed = type === 'java.time.LocalDateTime' ? Object.values(units)
+          : type === 'java.time.LocalDate' ? ['days', 'weeks', 'months', 'years']
+          : type === 'java.time.Instant' ? ['seconds']
+          : [];
+        if (allowed.includes(unit)) {
+          const amount = shift[1] === 'minus' ? op('neg', arg(0)) : arg(0);
+          return pure(op('shiftTemporal', self, amount, lit(unit)), receiver.jt);
+        }
+      }
       if (name === 'isBefore' && args.length === 1) return pure(op('lt', self, arg(0)), T.boolean);
       if (name === 'isAfter' && args.length === 1) return pure(op('gt', self, arg(0)), T.boolean);
       if (name === 'isEqual' && args.length === 1) return pure(op('eq', self, arg(0)), T.boolean);
       break;
+    }
   }
   void ev;
   throw new Unsupported(`${simple(type)}.${name}/${args.length} is not modeled`, node);

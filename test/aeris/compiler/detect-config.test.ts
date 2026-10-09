@@ -144,14 +144,29 @@ describe('aeris init on an unfamiliar backend', () => {
     expect(yaml).not.toContain('organizationId:');
   });
 
-  it('proves a single-claim holder against the session record, and skips what is not an identifier', async () => {
-    const { yaml, notes } = await detect();
+  it('proves a single-claim holder against the session record', async () => {
+    const { yaml } = await detect();
     const claim = yaml.slice(yaml.indexOf('method: CallClaims.currentWorkspaceId'));
     expect(claim).toContain('kind: claim');
     expect(claim).toContain('claim: workspaceId');
-    // A String may be a username, a role or a locale: nothing here says which.
-    expect(yaml).not.toContain('CallClaims.currentLocale');
-    expect(notes.join(' ')).toMatch(/currentLocale returns a single String/);
+  });
+
+  /**
+   * A claim that is not an identifier is still worth declaring -- a handler
+   * that reads it has no other way to -- but it must never become the
+   * vocabulary a projection is restricted by. `locale` is the test: it is a
+   * component of the session record *and* matches an accessor name, and it is
+   * still not something a row can be scoped to.
+   */
+  it('declares a claim that is not an identifier, and refuses to scope rows by it', async () => {
+    const { yaml, notes } = await detect();
+    const claim = yaml.slice(yaml.indexOf('method: CallClaims.currentLocale'));
+    expect(claim).toContain('claim: locale');
+    expect(notes.join(' ')).toMatch(/not an identifier/);
+    // scopeClaims lists its entries as `name:`; a non-identifier is absent.
+    const scope = yaml.slice(yaml.indexOf('scopeClaims:'));
+    expect(scope).toContain('workspaceId:');
+    expect(scope).not.toContain('locale:');
   });
 });
 
@@ -169,13 +184,16 @@ describe('aeris init on a holder backed by a ThreadLocal', () => {
     expect(yaml).toContain('method: SiteContext.getSiteId');
     expect(yaml).toContain('claim: siteId');
     expect(yaml).toContain('siteId:');
-    expect(notes.join(' ')).toMatch(/'siteId' is a claim name read off the accessor names: confirm/);
+    expect(notes.join(' ')).toMatch(/'siteId'.*read off the accessor names: confirm/);
   });
 
-  it('leaves the setter and the non-identifier accessor alone', async () => {
-    const { yaml, notes } = await detectLegacy();
+  it('leaves the setter alone, and keeps the non-identifier out of scopeClaims', async () => {
+    const { yaml } = await detectLegacy();
+    // A setter changes the session; it is not a way to read it.
     expect(yaml).not.toContain('SiteContext.setSiteId');
-    expect(yaml).not.toContain('SiteContext.getActor');
-    expect(notes.join(' ')).toMatch(/getActor returns a single String/);
+    expect(yaml).toContain('claim: actor');
+    const scope = yaml.slice(yaml.indexOf('scopeClaims:'));
+    expect(scope).toContain('siteId:');
+    expect(scope).not.toContain('actor:');
   });
 });

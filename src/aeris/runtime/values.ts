@@ -187,6 +187,73 @@ export function isIsoTemporal(text: string, kind: 'local-date' | 'local-datetime
   return day <= lengths[month - 1]!;
 }
 
+const TEMPORAL_PARTS = /^([+-]?\d{4,10})-(\d{2})-(\d{2})(?:T([01]\d|2[0-3]):([0-5]\d)(?::([0-5]\d)(?:\.(\d{1,9}))?)?(Z|[+-]\d{2}:\d{2})?)?$/;
+
+export type TemporalUnit = 'years' | 'months' | 'weeks' | 'days' | 'hours' | 'minutes' | 'seconds';
+
+const EPOCH_DAY_OF = (year: number, month: number, day: number): number =>
+  Math.floor(Date.UTC(2000, 0, 1) / 86_400_000) + Math.round((Date.UTC(year, month - 1, day) - Date.UTC(2000, 0, 1)) / 86_400_000);
+
+function daysInMonth(year: number, month: number): number {
+  const leap = (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
+  return [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1]!;
+}
+
+/**
+ * `plusDays`, `minusMonths` and the rest of java.time, on the ISO text the row
+ * actually holds.
+ *
+ * Two things make this worth writing out rather than handing to Date. A shift
+ * in months or years **clamps** the day to the end of the target month, exactly
+ * as java.time does (31 January plus one month is 28 or 29 February, never 2
+ * or 3 March). And the answer is rendered in the shape Java's own `toString()`
+ * produces -- seconds dropped when the time is whole, fractions in groups of
+ * three digits -- because a response body carrying a temporal is compared
+ * character for character against the backend's.
+ */
+export function shiftTemporal(text: string, amount: number, unit: TemporalUnit): string | undefined {
+  const match = TEMPORAL_PARTS.exec(text);
+  if (match === null || !Number.isInteger(amount)) return undefined;
+  const dateOnly = match[4] === undefined;
+  const zone = match[8] ?? '';
+  let year = Number(match[1]);
+  let month = Number(match[2]);
+  let day = Number(match[3]);
+  const fraction = match[7] ?? '';
+  let seconds = (Number(match[4] ?? 0) * 3600) + (Number(match[5] ?? 0) * 60) + Number(match[6] ?? 0);
+
+  if (unit === 'years' || unit === 'months') {
+    const total = (year * 12) + (month - 1) + (unit === 'years' ? amount * 12 : amount);
+    year = Math.floor(total / 12);
+    month = (total % 12) + 1;
+    day = Math.min(day, daysInMonth(year, month));
+  } else {
+    const perUnit = { weeks: 604_800, days: 86_400, hours: 3600, minutes: 60, seconds: 1 }[unit];
+    const shifted = (EPOCH_DAY_OF(year, month, day) * 86_400) + seconds + (amount * perUnit);
+    const wholeDays = Math.floor(shifted / 86_400);
+    seconds = shifted - (wholeDays * 86_400);
+    const moment = new Date((wholeDays - Math.floor(Date.UTC(1970, 0, 1) / 86_400_000)) * 86_400_000);
+    year = moment.getUTCFullYear();
+    month = moment.getUTCMonth() + 1;
+    day = moment.getUTCDate();
+  }
+  if (!Number.isFinite(year) || !Number.isFinite(seconds)) return undefined;
+
+  const pad = (value: number, width = 2) => String(Math.abs(value)).padStart(width, '0');
+  const date = `${year < 0 ? '-' : ''}${pad(year, 4)}-${pad(month)}-${pad(day)}`;
+  if (dateOnly) return date;
+  const hour = Math.floor(seconds / 3600);
+  const minute = Math.floor((seconds % 3600) / 60);
+  const second = seconds % 60;
+  // Java renders the fraction in 3, 6 or 9 digits, and drops the seconds only
+  // when the time is whole. An instant always carries its seconds.
+  const digits = fraction === '' ? 0 : Math.ceil(fraction.length / 3) * 3;
+  const fractional = digits === 0 ? '' : `.${fraction.padEnd(digits, '0')}`;
+  const whole = second === 0 && fractional === '' && zone === '';
+  const time = whole ? `${pad(hour)}:${pad(minute)}` : `${pad(hour)}:${pad(minute)}:${pad(second)}${fractional}`;
+  return `${date}T${time}${zone}`;
+}
+
 function sortKeys(value: JsonValue): JsonValue {
   if (Array.isArray(value)) return value.map(sortKeys);
   if (value !== null && typeof value === 'object') {

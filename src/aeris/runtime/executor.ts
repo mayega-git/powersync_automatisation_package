@@ -22,6 +22,8 @@ import {
   formatNow,
   isIsoTemporal,
   javaStrip,
+  shiftTemporal,
+  type TemporalUnit,
   type RoundingMode,
   normalizeStored,
   valuesEqual,
@@ -671,6 +673,13 @@ class Frame {
         const pattern = javaRegex(str(b));
         if (expr.op === 'matches') return new RegExp(`^(?:${pattern})$`, 'u').test(str(a));
         return str(a).replace(new RegExp(pattern, 'gu'), str(values[2] ?? null));
+      }
+      case 'shiftTemporal': {
+        // plusDays / minusMonths and the rest of java.time, rendered the way
+        // Java's own toString() does so a response body compares exactly.
+        const shifted = a === null ? null : shiftTemporal(str(a), num(b), str(values[2] ?? null) as TemporalUnit);
+        if (shifted === undefined) throw new AerisExecutionError(`Cannot shift ${JSON.stringify(a)} by ${JSON.stringify(b)}.`);
+        return shifted;
       }
       case 'isoTemporal':
         // Guards a parse: false means the backend raises DateTimeParseException.

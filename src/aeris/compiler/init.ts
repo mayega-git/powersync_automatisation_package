@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import yaml from 'js-yaml';
-import { JavaProject, type SourceFile } from './java/model.js';
+import { JavaProject, type SourceFile, type TypeDecl } from './java/model.js';
 
 export interface DetectedConfig {
   yaml: string;
@@ -13,12 +13,25 @@ export interface DetectedConfig {
  * methods returning the session from the Reactor Context), the
  * Authentication class, an idempotency web filter and active profiles.
  */
+/**
+ * The Reactor Context key a holder reads: `ctx.get(USER_ID_KEY)` where
+ * `USER_ID_KEY = "userId"` names the claim `userId`. Only a constant of the
+ * holder's own class counts; anything else leaves the name to the method.
+ */
+function contextKey(type: TypeDecl, body: string): { key: string } | undefined {
+  const read = /\.\s*(?:get|hasKey)\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)/.exec(body);
+  if (read === null) return undefined;
+  const field = type.fields.find((candidate) => candidate.name === read[1] && candidate.modifiers.has('static'));
+  const literal = field?.initializer === undefined ? undefined : /^\s*"([^"\\]*)"\s*$/.exec(field.initializer.text);
+  return literal === null || literal === undefined ? undefined : { key: literal[1]! };
+}
+
 export async function detectConfig(rootDir: string, files: readonly SourceFile[]): Promise<DetectedConfig> {
   const project = await JavaProject.load(files);
   const notes: string[] = [];
   const sources: { method: string; kind: string; type?: string; claim?: string }[] = [];
-  /** Session accessors returning one identifier, resolved once the records are known. */
-  const claimCandidates: { method: string; payload: string }[] = [];
+  /** Session accessors returning one claim, resolved once the records are known. */
+  const claimCandidates: { method: string; payload: string; key?: string }[] = [];
   for (const type of project.types.values()) {
     // A class holding the session in a static ThreadLocal a filter fills: not
     // reactive, but the same thing -- the verified session, read without a
@@ -51,7 +64,7 @@ export async function detectConfig(rootDir: string, files: readonly SourceFile[]
         // here, because the session records are still being collected, so it is
         // resolved below against their components.
         if (!optional && /^(java\.util\.UUID|java\.lang\.String)$/.test(inner.name)) {
-          claimCandidates.push({ method: `${type.simple}.${method.name}`, payload: inner.name });
+          claimCandidates.push({ method: `${type.simple}.${method.name}`, payload: inner.name, ...(contextKey(type, method.body.text) ?? {}) });
         }
         continue;
       }
@@ -123,28 +136,46 @@ export async function detectConfig(rootDir: string, files: readonly SourceFile[]
     }
   }
   const proposedClaims: string[] = [];
-  for (const candidate of claimCandidates) {
+  /** Claims that are identifiers: only these may restrict a row. */
+  const identifierClaims = new Set<string>();
+  // The claim's name comes from a session record when there is one, and from
+  // the accessor otherwise. A claim that is not an identifier is still worth
+  // declaring -- a handler that reads it has no other way to -- but it never
+  // reaches `scopeClaims` below, so it cannot silently become the vocabulary a
+  // projection is restricted by.
+  const resolved = claimCandidates.map((candidate) => {
     const accessor = candidate.method.slice(candidate.method.indexOf('.') + 1);
     const stripped = accessor.replace(/^(get|fetch|resolve|require)+/i, '').replace(/^(current|authenticated|connected|logged(In)?)/i, '');
-    // Only an identifier can restrict a row, so only an identifier is a claim
-    // here -- a record component named `locale` matches the accessor's name
-    // and is still not something a projection can be scoped by.
-    const known = candidate.payload === 'java.util.UUID' ? sessionClaims.get(stripped.toLowerCase()) : undefined;
-    if (known !== undefined) {
-      sources.push({ method: candidate.method, kind: 'claim', claim: known });
+    const identifier = candidate.payload === 'java.util.UUID';
+    const known = identifier ? sessionClaims.get(stripped.toLowerCase()) : undefined;
+    // The Reactor Context key the accessor reads *is* the claim's name in the
+    // backend's own vocabulary -- better evidence than the method's name, and
+    // it is the name `contextWrite` is checked against downstream.
+    const derived = candidate.key ?? (stripped.length === 0 ? undefined : stripped[0]!.toLowerCase() + stripped.slice(1));
+    return { candidate, identifier, proven: known !== undefined, claim: known ?? derived };
+  });
+  // One identity, one claim. `getCurrentOrganization()` and `getOrganizationId()`
+  // are the same identifier spelled two ways, and declaring it twice under two
+  // names would make the configuration contradict itself -- the backend's own
+  // more explicit spelling wins.
+  const everyName = resolved.map((entry) => entry.claim).filter((claim): claim is string => claim !== undefined);
+  const canonical = (claim: string): string => {
+    const longer = everyName.find((other) => other !== claim && other.toLowerCase() === `${claim.toLowerCase()}id`);
+    return longer ?? claim;
+  };
+  for (const entry of resolved) {
+    if (entry.claim === undefined) {
+      notes.push(`${entry.candidate.method} reads the session but its name says nothing about which claim: declare it yourself.`);
       continue;
     }
-    if (candidate.payload !== 'java.util.UUID' || stripped.length === 0) {
-      notes.push(`${candidate.method} returns a single ${candidate.payload.split('.').pop()} from the session, which is not an identifier: add it as a 'claim' source yourself if it is one.`);
-      continue;
-    }
-    const claim = stripped[0]!.toLowerCase() + stripped.slice(1);
-    sources.push({ method: candidate.method, kind: 'claim', claim });
-    proposedClaims.push(claim);
+    const claim = entry.proven ? entry.claim : canonical(entry.claim);
+    sources.push({ method: entry.candidate.method, kind: 'claim', claim });
+    if (entry.identifier) identifierClaims.add(claim);
+    if (!entry.proven) proposedClaims.push(`${claim}${entry.identifier ? '' : ' (not an identifier)'}`);
   }
   if (proposedClaims.length > 0) {
     const named = [...new Set(proposedClaims)];
-    notes.push(`No session record in the sources, so ${named.map((claim) => `'${claim}'`).join(', ')} ${named.length === 1 ? 'is a claim name' : 'are claim names'} read off the accessor names: confirm each one is the claim the backend really puts in the context.`);
+    notes.push(`${named.map((claim) => `'${claim}'`).join(', ')} ${named.length === 1 ? 'is a claim name' : 'are claim names'} read off the accessor names: confirm each one is the claim the backend really puts in the session. Only the identifiers among them restrict rows.`);
   }
 
   // The claims that can restrict a row are the session's own identifiers, read
@@ -153,7 +184,7 @@ export async function detectConfig(rootDir: string, files: readonly SourceFile[]
   const scopeClaims: Record<string, string[]> = {};
   for (const source of sources) {
     if (source.kind === 'claim') {
-      scopeClaims[source.claim!] = [source.claim!];
+      if (identifierClaims.has(source.claim!)) scopeClaims[source.claim!] = [source.claim!];
       continue;
     }
     if (source.kind === 'metadata' || source.type === undefined) continue;

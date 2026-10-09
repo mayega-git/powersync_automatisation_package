@@ -32,7 +32,7 @@ import {
 } from './sv.js';
 
 const IDENTITY_OPERATORS = new Set([
-  'contextWrite', 'subscribeOn', 'publishOn', 'timeout', 'cache', 'retry', 'retryWhen', 'share', 'hide',
+  'subscribeOn', 'publishOn', 'timeout', 'cache', 'retry', 'retryWhen', 'share', 'hide',
   'onTerminateDetach', 'log', 'name', 'tag', 'checkpoint', 'metrics', 'cancelOn', 'cast',
 ]);
 
@@ -145,8 +145,36 @@ export function mapElements(ev: Evaluator, fn: SV, list: Expr, as: string, eleme
   return probe.outcome.value;
 }
 
+/**
+ * `contextWrite(context)` decides what everything downstream of it reads as the
+ * session. Waving it through would mean a handler that writes a *different*
+ * organization into the Context gets the caller's own rows locally and that
+ * organization's rows from the backend -- the same request answered two ways.
+ *
+ * So it is an identity only when what is written is provably the session
+ * itself: every entry carries the claim that bears its own key's name, which is
+ * what a filter copying a ThreadLocal into the Reactor Context does. Anything
+ * else stays online; nothing about the session is guessed.
+ */
+function contextWrite(receiver: MonoSV | FluxSV, args: SV[], node: SyntaxNode): SV {
+  const written = args[0];
+  if (written === undefined) return receiver;
+  if (written.t !== 'ctxmap') {
+    throw new Unsupported('contextWrite() is given a Context the compiler cannot read', node);
+  }
+  for (const entry of written.entries) {
+    const value = entry.value;
+    const claim = value.t === 'pure' && value.e.k === 'ctx' ? value.e.name : undefined;
+    if (claim !== entry.key) {
+      throw new Unsupported(`contextWrite() puts ${claim === undefined ? 'a computed value' : `the claim ${claim}`} under "${entry.key}", which changes the session the code downstream reads`, node);
+    }
+  }
+  return receiver;
+}
+
 export function reactiveCall(ev: Evaluator, receiver: MonoSV | FluxSV, name: string, args: SV[], node: SyntaxNode, scope: Scope): SV {
   if (IDENTITY_OPERATORS.has(name)) return receiver;
+  if (name === 'contextWrite') return contextWrite(receiver, args, node);
   if (name === 'as' && args.length === 1) return ev.apply(args[0]!, [receiver], scope.block, node, scope);
   if (SIDE_CHANNEL_OPERATORS.has(name)) return sideChannel(ev, receiver, args, node, scope, name);
   if (ERROR_HANDLERS.has(name)) return errorHandler(ev, receiver, args, node, scope, name);

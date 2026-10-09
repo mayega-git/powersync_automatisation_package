@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { AerisHttpError, Executor, type ExecutionRequest } from '../../../src/aeris/runtime/executor.js';
 import { MemoryStore } from '../../../src/aeris/runtime/store/MemoryStore.js';
-import { decimalAdd, decimalDividePrecision, decimalMul, decimalRound, decimalSub, formatNow } from '../../../src/aeris/runtime/values.js';
+import { decimalAdd, decimalDividePrecision, decimalMul, decimalRound, decimalSub, formatNow, isIsoTemporal, shiftTemporal } from '../../../src/aeris/runtime/values.js';
 import { ENTITY, ORG, OTHER_ORG, endpoints, projection } from './fixtures.js';
 
 const ID = '33333333-3333-4333-8333-333333333333';
@@ -121,5 +121,44 @@ describe('value semantics', () => {
     expect(formatNow(Date.parse('2026-10-05T18:58:28Z'), 'datetime', 'UTC')).toBe('2026-10-05T18:58:28Z');
     expect(formatNow(instant, 'datetime-local', 'Africa/Douala')).toBe('2026-10-05T19:58:28.2');
     expect(formatNow(Date.parse('2026-10-05T23:30:00Z'), 'date', 'Africa/Douala')).toBe('2026-10-06');
+  });
+
+  /**
+   * java.time arithmetic, on the three points where a naive implementation is
+   * wrong: a month shift clamps the day to the end of the target month, the
+   * rendering drops the seconds when the time is whole (Java's own
+   * `toString()`), and the fraction of an instant keeps its width. A response
+   * body carrying a temporal is compared character for character against the
+   * backend's, so the shape is part of the contract.
+   */
+  it('shifts a temporal exactly as java.time does, rendering as Java prints it', () => {
+    expect(shiftTemporal('2026-01-31', 1, 'months')).toBe('2026-02-28');
+    expect(shiftTemporal('2024-01-31', 1, 'months')).toBe('2024-02-29');
+    expect(shiftTemporal('2024-02-29', 1, 'years')).toBe('2025-02-28');
+    expect(shiftTemporal('2026-03-01', -1, 'days')).toBe('2026-02-28');
+    expect(shiftTemporal('2026-12-31', 1, 'days')).toBe('2027-01-01');
+    expect(shiftTemporal('2026-05-15', -2, 'weeks')).toBe('2026-05-01');
+    // A whole time prints without its seconds, exactly like LocalDateTime.toString().
+    expect(shiftTemporal('2026-01-01T10:30:00', 1, 'days')).toBe('2026-01-02T10:30');
+    expect(shiftTemporal('2026-01-01T10:30:45', 2, 'hours')).toBe('2026-01-01T12:30:45');
+    expect(shiftTemporal('2026-01-01T23:30', 45, 'minutes')).toBe('2026-01-02T00:15');
+    expect(shiftTemporal('2026-01-01T00:00:00', -1, 'seconds')).toBe('2025-12-31T23:59:59');
+    // An instant keeps its offset and the width of its fraction.
+    expect(shiftTemporal('2026-10-09T08:42:28.486389Z', 10, 'seconds')).toBe('2026-10-09T08:42:38.486389Z');
+    // Not a temporal, or not a whole amount: no answer rather than a wrong one.
+    expect(shiftTemporal('later today', 1, 'days')).toBeUndefined();
+    expect(shiftTemporal('2026-01-01', 1.5, 'days')).toBeUndefined();
+  });
+
+  it('accepts exactly what LocalDate.parse and LocalDateTime.parse accept', () => {
+    expect(isIsoTemporal('2026-02-28', 'local-date')).toBe(true);
+    // The calendar, not just the shape: February never has 31 days.
+    expect(isIsoTemporal('2026-02-31', 'local-date')).toBe(false);
+    expect(isIsoTemporal('2024-02-29', 'local-date')).toBe(true);
+    expect(isIsoTemporal('2026-02-29', 'local-date')).toBe(false);
+    expect(isIsoTemporal('2026-01-01T10:30', 'local-datetime')).toBe(true);
+    expect(isIsoTemporal('2026-01-01T10:30:45.123456789', 'local-datetime')).toBe(true);
+    expect(isIsoTemporal('2026-01-01T24:00', 'local-datetime')).toBe(false);
+    expect(isIsoTemporal('2026-01-01', 'local-datetime')).toBe(false);
   });
 });

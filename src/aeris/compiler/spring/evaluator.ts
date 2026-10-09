@@ -261,6 +261,11 @@ export class Evaluator {
       const encoded = this.encode(object);
       return obj(object.cls, new Map(), a.t === 'obj' ? cond(test, encoded, NULL) : cond(test, NULL, encoded));
     }
+    // A Reactor Context entry added under a condition is still an entry: the
+    // check `contextWrite` performs is about what the write *may* carry, so it
+    // has to see both branches. Keeping the union rather than choosing makes an
+    // entry that fails the check fail it whichever branch put it there.
+    if (a.t === 'ctxmap' && b.t === 'ctxmap') return { t: 'ctxmap', entries: [...a.entries, ...b.entries] };
     if (a.t === 'list' && b.t === 'list') return { ...a, e: cond(test, a.e, b.e) };
     if (a.t === 'list' && b.t === 'pure') return { ...a, e: cond(test, a.e, b.e) };
     // A mutable collection on one side, an immutable one on the other: the merged value is read-only (mutating it is refused).
@@ -1511,6 +1516,18 @@ export class Evaluator {
         return this.templateCall(name, args, node, scope);
       case 'criteria':
         return criteriaStep(receiver, name, args, node, this, scope);
+      case 'ctxmap': {
+        if (name === 'put' && args.length === 2) {
+          const key = args[0]!;
+          if (key.t !== 'pure' || key.e.k !== 'lit' || typeof key.e.v !== 'string') {
+            this.fail('Context.put() with a key that is not a constant', node, scope);
+          }
+          return { t: 'ctxmap', entries: [...receiver.entries, { key: (key as { e: { v: string } }).e.v, value: args[1]! }] };
+        }
+        if (name === 'isEmpty' && args.length === 0) return pure(lit(receiver.entries.length === 0), T.boolean);
+        if (name === 'size' && args.length === 0) return pure(lit(receiver.entries.length), T.int);
+        this.fail(`Context.${name}/${args.length} is not modeled`, node, scope);
+      }
       case 'sort':
         if (name === 'descending' && args.length === 0) return { t: 'sort', orders: receiver.orders.map((order) => ({ ...order, dir: 'desc' as const })) };
         if (name === 'ascending' && args.length === 0) return { t: 'sort', orders: receiver.orders.map((order) => ({ ...order, dir: 'asc' as const })) };
