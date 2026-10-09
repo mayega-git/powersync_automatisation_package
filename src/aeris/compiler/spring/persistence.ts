@@ -32,6 +32,13 @@ export interface RepositoryModel {
   decl: TypeDecl;
   entity: EntityModel;
   idType: JType;
+  /**
+   * Reactive (R2DBC: every method answers a Mono or a Flux) or blocking (JPA
+   * and plain Spring Data: every method answers the value itself). The query
+   * semantics are identical; only the wrapper differs, so the compiler proves
+   * the query once and unwraps at the call site.
+   */
+  reactive: boolean;
 }
 
 export type QueryResult = 'one' | 'many' | 'count' | 'exists' | 'delete';
@@ -134,16 +141,20 @@ export class PersistenceModel {
     for (const decl of project.types.values()) {
       if (decl.kind !== 'interface') continue;
       let args: JType[] | undefined;
+      let reactive = false;
       for (const base of REPOSITORY_BASES) {
         args = project.supertypeArguments(decl, base);
-        if (args !== undefined) break;
+        if (args !== undefined) {
+          reactive = /Reactive|R2dbc/.test(base);
+          break;
+        }
       }
       if (args === undefined || args.length < 2) continue;
       const entityDecl = project.type(args[0]!.name);
       if (entityDecl === undefined) continue;
       try {
         const entity = this.entity(entityDecl);
-        this.repositories.set(decl.fqn, { fqn: decl.fqn, decl, entity, idType: args[1]! });
+        this.repositories.set(decl.fqn, { fqn: decl.fqn, decl, entity, idType: args[1]!, reactive });
       } catch (error) {
         this.problems.set(decl.fqn, (error as Error).message);
       }

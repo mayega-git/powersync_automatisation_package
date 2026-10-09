@@ -2088,7 +2088,56 @@ export class Evaluator {
     return loaded;
   }
 
+  /**
+   * A repository call, with the publisher removed when the repository is a
+   * blocking one (JpaRepository, CrudRepository: Spring MVC / JPA backends).
+   *
+   * The query itself is proved once, by `queryCall` below, and is the same
+   * under both stacks -- the same rows, the same filters, the same order. Only
+   * the wrapper differs: R2DBC defers the query inside a Mono or a Flux, JPA
+   * runs it where it is written and answers the value. Unwrapping here, in the
+   * caller's own block, is exactly that: the statement executes at its place in
+   * the program, which is what a blocking driver does.
+   *
+   * The declared return type decides, not the base interface, because a
+   * `Repository<T, ID>` subinterface may declare either shape -- and a method
+   * declared `Mono<T>` on an otherwise blocking repository is still reactive.
+   */
   private repositoryCall(repo: RepositoryModel, name: string, args: SV[], node: SyntaxNode, scope: Scope): SV {
+    const result = this.queryCall(repo, name, args, node, scope);
+    const declared = this.project.methodsOf(repo.decl, name).find((method) => method.params.length === args.length);
+    const returned = declared?.returnType;
+    const wrapper = returned === undefined ? undefined : typeName(returned);
+    if (wrapper === 'Mono' || wrapper === 'Flux') return result;
+    if (returned === undefined && repo.reactive) return result;
+    return this.unwrapBlocking(result, name, returned, scope);
+  }
+
+  /**
+   * The blocking shape of a query result. Spring Data's blocking contract is
+   * fixed: `findById` answers an Optional, a derived finder for a single row
+   * answers the entity or null, a many-row finder answers a List, and a delete
+   * answers nothing.
+   */
+  private unwrapBlocking(result: SV, name: string, returned: JType | undefined, scope: Scope): SV {
+    if (result.t === 'flux') {
+      const { list, element } = result.run(scope.block);
+      return { t: 'list', e: list, elem: result.elem, element };
+    }
+    if (result.t !== 'mono') return result;
+    const emission = result.run(scope.block);
+    if (emission.value.t === 'void') return VOID;
+    const wrapper = returned === undefined ? undefined : typeName(returned);
+    // `findById` is declared Optional<T> by the interface AERIS never sees.
+    if (wrapper === 'Optional' || (returned === undefined && name === 'findById')) {
+      return { t: 'optional', value: emission.value, present: not(emission.empty) };
+    }
+    if (isLit(emission.empty, false)) return emission.value;
+    // A single-row finder that found nothing answers null, not an empty publisher.
+    return this.merge(not(emission.empty), emission.value, pure(NULL, T.object));
+  }
+
+  private queryCall(repo: RepositoryModel, name: string, args: SV[], node: SyntaxNode, scope: Scope): SV {
     const entity = repo.entity;
     const entityType: JType = { name: entity.fqn, args: [], array: 0 };
     this.record('database-read', repo.decl.node, repo.decl.file.path, `${repo.decl.simple}.${name}`);

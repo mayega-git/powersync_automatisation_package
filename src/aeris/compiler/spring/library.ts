@@ -801,7 +801,21 @@ function optionalMethod(ev: Evaluator, receiver: SV & { t: 'optional' }, name: s
       return receiver.value;
     }
     case 'map/1': {
-      const mapped = branch(scope.block, receiver.present, (child) => ev.apply(args[0]!, [receiver.value], child, node, scope), () => pure(NULL, T.object), (t, a, b) => ev.merge(t, a, b));
+      // Java's Optional.map answers empty when the mapper answers null, which
+      // for a scalar is `notNull(mapped)` -- hence merging the absent branch
+      // with null. A mapper answering something that is not a scalar (a
+      // ResponseEntity, an object, a list) has no null form to merge with, and
+      // forcing one loses the value: `findById(id).map(ResponseEntity::ok)` is
+      // the ordinary shape of an MVC handler. Such a value is only ever read
+      // under `present`, which already records the absence, so the absent
+      // branch is dropped instead of merged.
+      const mapped = branch(
+        scope.block,
+        receiver.present,
+        (child) => ev.apply(args[0]!, [receiver.value], child, node, scope),
+        () => pure(NULL, T.object),
+        (t, a, b) => (a.t === 'pure' ? ev.merge(t, a, b) : a),
+      );
       const present = mapped.t === 'pure' ? and(receiver.present, op('notNull', mapped.e)) : receiver.present;
       return { t: 'optional', value: mapped, present };
     }
