@@ -20,37 +20,44 @@ export async function detectConfig(rootDir: string, files: readonly SourceFile[]
   /** Session accessors returning one identifier, resolved once the records are known. */
   const claimCandidates: { method: string; payload: string }[] = [];
   for (const type of project.types.values()) {
-    // A holder backed by a ThreadLocal filled by a filter: not reactive, but
-    // the same thing -- the verified session, read without a parameter. Common
-    // in a backend migrated from Spring MVC, and what the ThreadLocal is
+    // A class holding the session in a static ThreadLocal a filter fills: not
+    // reactive, but the same thing -- the verified session, read without a
+    // parameter. The usual shape in Spring MVC, and what such a ThreadLocal is
     // *otherwise* is shared mutable state the compiler refuses, so leaving it
     // undetected costs every handler that reads the session this way.
-    const threadLocals = type.fields
+    // Every static no-argument accessor of such a class is a session accessor;
+    // what it returns says which kind.
+    const held = new Set(type.fields
       .filter((field) => /^(java\.lang\.)?ThreadLocal$/.test(field.type.name) && field.modifiers.has('static'))
-      .map((field) => field.name);
+      .flatMap((field) => {
+        const argument = field.type.args[0];
+        return argument === undefined ? [] : [argument.name, argument.name.split('.').at(-1)!];
+      }));
     for (const method of type.methods) {
       if (!method.modifiers.has('static') || method.params.length !== 0 || method.body === undefined) continue;
-      if (threadLocals.some((name) => new RegExp(`\\b${name}\\s*\\.\\s*get\\s*\\(`).test(method.body!.text))
-        && /^(java\.util\.UUID|java\.lang\.String)$/.test(method.returnType.name)) {
-        claimCandidates.push({ method: `${type.simple}.${method.name}`, payload: method.returnType.name });
-        continue;
-      }
-      if (!/deferContextual|ReactiveSecurityContextHolder/.test(method.body.text)) continue;
-      if (method.returnType.name !== 'reactor.core.publisher.Mono') continue;
-      const payload = method.returnType.args[0];
+      const reactive = /deferContextual|ReactiveSecurityContextHolder/.test(method.body.text)
+        && method.returnType.name === 'reactor.core.publisher.Mono';
+      if (!reactive && held.size === 0) continue;
+      // A reactive holder answers Mono<T>; a blocking one answers T itself.
+      const payload = reactive ? method.returnType.args[0] : method.returnType;
       if (payload === undefined) continue;
       const optional = payload.name === 'java.util.Optional';
-      const record = project.type(optional ? payload.args[0]?.name ?? '' : payload.name);
+      const inner = optional ? payload.args[0] : payload;
+      if (inner === undefined) continue;
+      const record = project.type(inner.name);
       if (record === undefined || (record.kind !== 'record' && record.kind !== 'class')) {
         // A holder that hands back a single identifier rather than the whole
-        // session (`getCurrentUserId(): Mono<UUID>`). Which claim it is cannot
-        // be decided here, because the session records are still being
-        // collected, so it is resolved below against their components.
-        if (!optional && /^(java\.util\.UUID|java\.lang\.String)$/.test(payload.name)) {
-          claimCandidates.push({ method: `${type.simple}.${method.name}`, payload: payload.name });
+        // session (`getCurrentUserId()`). Which claim it is cannot be decided
+        // here, because the session records are still being collected, so it is
+        // resolved below against their components.
+        if (!optional && /^(java\.util\.UUID|java\.lang\.String)$/.test(inner.name)) {
+          claimCandidates.push({ method: `${type.simple}.${method.name}`, payload: inner.name });
         }
         continue;
       }
+      // For a blocking holder the session is what the ThreadLocal actually
+      // holds; any other record a static method of that class returns is not.
+      if (!reactive && !held.has(record.fqn) && !held.has(record.simple)) continue;
       // A session carries identities (tenant, organization, user...), not request metadata.
       const components = record.kind === 'record' ? record.recordComponents : record.fields;
       // What identifies the *call* rather than the caller: a device has none of
@@ -160,7 +167,9 @@ export async function detectConfig(rootDir: string, files: readonly SourceFile[]
 
   const authentication = [...project.types.values()].find((type) =>
     type.kind === 'class' && type.superclass !== undefined && /AbstractAuthenticationToken$/.test(type.superclass.name));
-  const idempotencyFilter = files.find((file) => /implements\s+WebFilter/.test(file.content) && /Idempotency-Key/.test(file.content));
+  // WebFilter on WebFlux, Filter or OncePerRequestFilter on the servlet stack.
+  const idempotencyFilter = files.find((file) =>
+    /implements\s+(Web)?Filter\b|extends\s+OncePerRequestFilter\b/.test(file.content) && /Idempotency-Key/.test(file.content));
   if (idempotencyFilter !== undefined) notes.push(`Idempotency filter detected in ${idempotencyFilter.path}: check the covered methods and paths.`);
   else notes.push('No Idempotency-Key filter found: creations (POST) will stay online-only until the backend deduplicates replays.');
   let profiles: string[] = [];

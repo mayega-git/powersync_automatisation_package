@@ -27,11 +27,15 @@ import jakarta.persistence.*;
 @Table(name = "note")
 public class Note {
   @Id private UUID id;
+  /** Null until the row has been written: what tells an insert from an update. */
+  @Version private Long version;
   @Column(name = "tenant_id") private UUID tenantId;
   private String title;
   private boolean archived;
   public UUID getId() { return id; }
   public void setId(UUID id) { this.id = id; }
+  public Long getVersion() { return version; }
+  public void setVersion(Long version) { this.version = version; }
   public UUID getTenantId() { return tenantId; }
   public void setTenantId(UUID tenantId) { this.tenantId = tenantId; }
   public String getTitle() { return title; }
@@ -49,9 +53,12 @@ import jakarta.persistence.*;
 @Table(name = "ticket")
 public class Ticket {
   @Id @GeneratedValue(strategy = GenerationType.IDENTITY) private Long id;
+  @Version private Long version;
   @Column(name = "tenant_id") private java.util.UUID tenantId;
   private String label;
   public Long getId() { return id; }
+  public Long getVersion() { return version; }
+  public void setVersion(Long version) { this.version = version; }
   public java.util.UUID getTenantId() { return tenantId; }
   public void setTenantId(java.util.UUID tenantId) { this.tenantId = tenantId; }
   public String getLabel() { return label; }
@@ -67,6 +74,54 @@ import org.springframework.data.jpa.repository.JpaRepository;
 public interface NoteRepository extends JpaRepository<Note, UUID> {
   List<Note> findByTenantIdOrderByTitleAsc(UUID tenantId);
   List<Note> findByTenantIdAndArchived(UUID tenantId, boolean archived);
+}
+`;
+
+/** An assigned key, no @Version, no Persistable: save() is a merge of unknown shape. */
+const AMBIGUOUS = `
+package demo.mvc;
+import java.util.UUID;
+import jakarta.persistence.*;
+@Entity
+@Table(name = "memo")
+public class Memo {
+  @Id private UUID id;
+  @Column(name = "tenant_id") private UUID tenantId;
+  private String body;
+  public UUID getId() { return id; }
+  public void setId(UUID id) { this.id = id; }
+  public UUID getTenantId() { return tenantId; }
+  public void setTenantId(UUID tenantId) { this.tenantId = tenantId; }
+  public String getBody() { return body; }
+  public void setBody(String body) { this.body = body; }
+}
+`;
+
+const AMBIGUOUS_REPOSITORY = `
+package demo.mvc;
+import java.util.UUID;
+import org.springframework.data.jpa.repository.JpaRepository;
+public interface MemoRepository extends JpaRepository<Memo, UUID> {}
+`;
+
+const AMBIGUOUS_CONTROLLER = `
+package demo.mvc;
+import java.util.UUID;
+import org.springframework.web.bind.annotation.*;
+@RestController
+@RequestMapping("/api/memos")
+public class MemoController {
+  private final MemoRepository repository;
+  public MemoController(MemoRepository repository) { this.repository = repository; }
+
+  @PostMapping
+  public Memo create(@RequestBody CreateNote request) {
+    Memo memo = new Memo();
+    memo.setId(UUID.randomUUID());
+    memo.setTenantId(MvcContext.currentTenantId());
+    memo.setBody(request.title());
+    return repository.save(memo);
+  }
 }
 `;
 
@@ -170,7 +225,7 @@ const TENANT = 'aaaaaaaa-0000-4000-8000-000000000001';
 const OTHER = 'bbbbbbbb-0000-4000-8000-000000000002';
 const id = (n: number) => `00000000-0000-4000-8000-00000000000${n}`;
 const note = (n: number, tenantId: string, title: string, archived = false) => ({
-  id: id(n), tenantId, title, archived,
+  id: id(n), version: 1, tenantId, title, archived,
 });
 
 describe('Spring MVC over JPA', () => {
@@ -237,6 +292,24 @@ describe('Spring MVC over JPA', () => {
     const result = await run(artifact, 'PUT /api/notes/{id}/archive', rows, { params: { id: id(1) }, context: { tenantId: TENANT } });
     expect(result.status).toBe(200);
     expect(result.body).toMatchObject({ title: 'Mine', archived: true });
+  });
+
+  /**
+   * JPA's save() of a detached entity is a merge -- it inserts when no row has
+   * that key and updates when one does -- while R2DBC's is an update decided by
+   * a null id or version. With an assigned key and nothing to tell the cases
+   * apart, reproducing one of them would be a guess.
+   */
+  it('refuses a save() whose insert-or-update it cannot decide', async () => {
+    const artifact = await compileJava({
+      ...SOURCES,
+      'demo/mvc/Memo.java': AMBIGUOUS,
+      'demo/mvc/MemoRepository.java': AMBIGUOUS_REPOSITORY,
+      'demo/mvc/MemoController.java': AMBIGUOUS_CONTROLLER,
+    }, CONFIG);
+    const plan = endpoint(artifact, 'POST /api/memos');
+    expect(plan.offlineClass).toBe('UNSUPPORTED');
+    expect(plan.reasons.join(' ')).toMatch(/neither @Version nor Persistable/);
   });
 
   /**

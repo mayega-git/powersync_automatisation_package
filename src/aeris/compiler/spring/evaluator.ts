@@ -2193,7 +2193,7 @@ export class Evaluator {
             },
           };
         case 'save/1':
-          return this.save(entity, args[0]!, node, scope);
+          return this.save(entity, args[0]!, node, scope, repo.reactive);
         case 'deleteById/1': {
           const id = key(args[0]!, 'deleteById argument');
           return { t: 'mono', elem: T.void, run: (block) => {
@@ -2331,8 +2331,18 @@ export class Evaluator {
   }
 
   /** Spring Data save(): INSERT when the entity is new, UPDATE otherwise. */
-  private save(entity: EntityModel, target: SV, node: SyntaxNode, scope: Scope): MonoSV {
+  private save(entity: EntityModel, target: SV, node: SyntaxNode, scope: Scope, reactive = true): MonoSV {
     if (target.t !== 'obj' || target.cls !== entity.fqn) this.fail(`save() of ${describe(target)} instead of ${entity.decl.simple}`, node, scope);
+    // JPA's save() of a detached entity is a merge: it inserts when no row has
+    // that key and updates when one does. R2DBC's is an update, decided by the
+    // id or the version being null. The compiler reproduces the second rule, so
+    // it is only right for JPA when something states which case applies -- a
+    // @Version (null until the row has been written) or Persistable#isNew. With
+    // an assigned key and neither of those, `save()` of a row that does not
+    // exist inserts on the backend and would update nothing here.
+    if (!reactive && !entity.persistable && entity.version === undefined) {
+      this.fail(`save() of ${entity.decl.simple} merges (inserts or updates) and ${entity.decl.simple} has neither @Version nor Persistable#isNew to say which`, node, scope);
+    }
     return {
       t: 'mono',
       elem: { name: entity.fqn, args: [], array: 0 },
@@ -2340,7 +2350,7 @@ export class Evaluator {
         this.useEntity(entity, 'write');
         this.record('database-write', entity.decl.node, entity.decl.file.path, `${entity.decl.simple}.save`);
         const isNew = this.isNew(entity, target, node, { ...scope, block });
-        branch(block, isNew, (child) => this.insert(entity, target, child, node, scope), (child) => this.update(entity, target, child), () => undefined);
+        branch(block, isNew, (child) => this.insert(entity, target, child, node, scope), (child) => this.update(entity, target, child, reactive), () => undefined);
         return { value: target, empty: FALSE };
       },
     };
@@ -2412,12 +2422,18 @@ export class Evaluator {
     block.emit({ op: 'INSERT', entity: entity.fqn, values, out });
   }
 
-  private update(entity: EntityModel, target: ObjSV, block: Block): void {
+  private update(entity: EntityModel, target: ObjSV, block: Block, reactive = true): void {
     if (entity.version !== undefined) {
       // incrementVersion: old + 1 (1 when null), written only if the stored version still matches.
       const previous = this.versionGuard(entity, target, block, 'update');
       const property = entity.properties.get(entity.version)!;
-      target.fields.set(entity.version, pure(cond(op('isNull', previous), lit(1), op('add', previous, lit(1))), property.jt));
+      const next = cond(op('isNull', previous), lit(1), op('add', previous, lit(1)));
+      // JPA dirty-checks before it writes: a save() that changes no column
+      // issues no UPDATE, so the version is *not* incremented. Spring Data
+      // R2DBC always writes. The difference is observable -- the answer carries
+      // the version -- so the increment is conditioned on something having
+      // changed, against the snapshot the row was loaded with.
+      target.fields.set(entity.version, pure(reactive ? next : cond(this.dirty(entity, target), next, previous), property.jt));
     }
     const values: Record<string, Expr> = {};
     for (const property of entity.properties.values()) {
@@ -2426,6 +2442,25 @@ export class Evaluator {
     }
     const out = block.fresh(`${entity.decl.simple.toLowerCase()}_saved`);
     block.emit({ op: 'UPDATE', entity: entity.fqn, key: this.encode(this.readField(target, entity.key)), values, out });
+  }
+
+  /**
+   * Whether any stored column of `target` differs from the row it was loaded
+   * with -- Hibernate's dirty check. An entity with no loaded snapshot (built
+   * in the handler rather than read) is always dirty.
+   */
+  private dirty(entity: EntityModel, target: ObjSV): Expr {
+    const base = target.base;
+    if (base === undefined) return TRUE;
+    const differences: Expr[] = [];
+    for (const property of entity.properties.values()) {
+      if (property.name === entity.key || property.name === entity.version) continue;
+      const current = this.readField(target, property.name);
+      if (current.t !== 'pure') return TRUE;
+      differences.push(not(op('eq', current.e, getf(base, property.name))));
+    }
+    if (differences.length === 0) return FALSE;
+    return differences.reduce((left, right) => or(left, right));
   }
 
   private storable(value: SV, property: { name: string; type: FieldType }, node: SyntaxNode | undefined, scope: Scope | undefined): Expr {

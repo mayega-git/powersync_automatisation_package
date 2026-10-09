@@ -66,7 +66,13 @@ export async function build(options: BuildOptions): Promise<BuildResult> {
   for (const type of project.types.values()) {
     if (type.kind !== 'class' || !project.profileActive(type)) continue;
     const supertypes = project.supertypeNames(type);
-    if (supertypes.has('org.springframework.web.server.WebFilter') || supertypes.has('WebFilter')) {
+    // WebFilter on WebFlux; Filter and OncePerRequestFilter on the servlet
+    // stack. Either way it runs before the handler and may reject the request.
+    const isFilter = ['org.springframework.web.server.WebFilter', 'WebFilter',
+      'jakarta.servlet.Filter', 'Filter',
+      'org.springframework.web.filter.OncePerRequestFilter', 'OncePerRequestFilter']
+      .some((name) => supertypes.has(name));
+    if (isFilter) {
       diagnostics.push(`filter: ${type.simple} (${type.file.path}) runs before handlers and is not analyzed; if it can reject requests, declare an equivalent in requestGates.`);
     }
   }

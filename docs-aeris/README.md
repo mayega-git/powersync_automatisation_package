@@ -33,7 +33,7 @@ Ce dossier documente l'implémentation livrée dans `@ksm/offline-sync` :
 ```
 
 1. **Behavior Compiler** (`@ksm/offline-sync/aeris/compiler`, CLI `aeris`) — lit les
-   sources Spring Boot (WebFlux/R2DBC, Reactor, Lombok, records), exécute
+   sources Spring Boot — WebFlux/R2DBC (Reactor) **ou** MVC/JPA (bloquant) —, exécute
    symboliquement chaque handler et produit pour chaque endpoint soit un
    **programme IR** prouvé, soit une **classe** expliquant pourquoi il reste en ligne.
 2. **Runtime navigateur** (`@ksm/offline-sync/aeris`) — intercepte les appels API,

@@ -76,12 +76,29 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 20
+      # The MVC/JPA corpus runs the same API on its own database, so the two
+      # stacks never see each other's rows.
+      postgres-jpa:
+        image: postgres:16
+        env:
+          POSTGRES_USER: taskly
+          POSTGRES_PASSWORD: taskly
+          POSTGRES_DB: taskly_jpa
+        ports: ['5433:5432']
+        options: >-
+          --health-cmd "pg_isready -U taskly"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
 
     env:
       TASKLY_BASE_URL: http://127.0.0.1:18090
       TASKLY_DATABASE_URL: postgres://taskly:taskly@127.0.0.1:5432/taskly
       TASKLY_R2DBC_URL: r2dbc:postgresql://127.0.0.1:5432/taskly
       TASKLY_JDBC_URL: jdbc:postgresql://127.0.0.1:5432/taskly
+      TASKLY_JPA_BASE_URL: http://127.0.0.1:18091
+      TASKLY_JPA_DATABASE_URL: postgres://taskly:taskly@127.0.0.1:5433/taskly_jpa
+      TASKLY_JPA_JDBC_URL: jdbc:postgresql://127.0.0.1:5433/taskly_jpa
 
     steps:
       - uses: actions/checkout@v4
@@ -99,8 +116,10 @@ jobs:
 
       - run: npm ci
 
-      - name: Build the corpus backend
-        run: npm run corpus:build
+      - name: Build the corpus backends
+        run: |
+          npm run corpus:build
+          npm run corpus:build:jpa
 
       - name: Start it and wait for the first answer
         run: |
@@ -121,8 +140,32 @@ jobs:
               -d "{\"name\":\"$name\",\"colour\":\"teal\"}" > /dev/null
           done
 
+      - name: Start the MVC/JPA corpus and wait for its first answer
+        run: |
+          nohup java -jar test-backends/taskly-jpa/target/taskly-jpa-0.0.1.jar > taskly-jpa.log 2>&1 &
+          for i in $(seq 1 60); do
+            if [ "$(curl -s -o /dev/null -w '%{http_code}' "$TASKLY_JPA_BASE_URL/api/labels")" = "200" ]; then exit 0; fi
+            sleep 2
+          done
+          echo "the MVC/JPA corpus backend did not start"; cat taskly-jpa.log; exit 1
+
+      - name: Seed the MVC/JPA corpus too
+        run: |
+          for name in Alpha Beta Gamma; do
+            curl -sf -X POST "$TASKLY_JPA_BASE_URL/api/boards" \
+              -H 'content-type: application/json' \
+              -H 'x-workspace-id: 11111111-1111-4111-8111-111111111111' \
+              -H 'x-member-id: 22222222-2222-4222-8222-222222222222' \
+              -d "{\"name\":\"$name\",\"colour\":\"teal\"}" > /dev/null
+          done
+
       - name: Compiled programs answer like the backend, reads and writes
         run: npm run corpus:differential
+
+      # The same API on Spring MVC and JPA: a program proved on one stack has to
+      # answer identically on the other, or the proof was about the framework.
+      - name: The same, on the MVC/JPA stack
+        run: npm run corpus:differential:jpa
 
       # The outbox, the ordering of dependent operations, the identifier
       # remapping and the convergence only meet a real backend here.
@@ -130,4 +173,4 @@ jobs:
         run: npm run corpus:e2e
 
       - if: failure()
-        run: cat taskly.log
+        run: cat taskly.log taskly-jpa.log

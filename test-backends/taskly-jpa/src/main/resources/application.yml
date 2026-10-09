@@ -1,0 +1,23 @@
+spring:
+  profiles:
+    active: jpa
+  datasource:
+    url: ${TASKLY_JPA_JDBC_URL:jdbc:postgresql://127.0.0.1:15435/taskly_jpa}
+    username: ${TASKLY_JPA_DB_USER:taskly}
+    password: ${TASKLY_JPA_DB_PASSWORD:taskly}
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: none
+    properties:
+      hibernate.jdbc.time_zone: UTC
+  liquibase:
+    enabled: true
+    change-log: classpath:db/changelog/db.changelog-master.sql
+server:
+  port: ${TASKLY_JPA_PORT:18091}
+logging:
+  level:
+    root: WARN
+    io.taskly: INFO
+    liquibase: INFO

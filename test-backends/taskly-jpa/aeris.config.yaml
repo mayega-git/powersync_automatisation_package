@@ -1,0 +1,43 @@
+# AERIS Behavior Compiler configuration for the Spring MVC / JPA corpus.
+# The same API as `test-backends/taskly`, on the other Spring stack: blocking
+# handlers, JpaRepository, and a session carried by a ThreadLocal a servlet
+# filter fills instead of the Reactor Context.
+activeProfiles:
+  - jpa
+serverTimeZone: UTC
+context:
+  sources:
+    - method: SessionScope.current
+      kind: required
+      type: io.taskly.jpa.session.CurrentUser
+    - method: SessionScope.currentOrNone
+      kind: optional
+      type: io.taskly.jpa.session.CurrentUser
+    - method: SessionScope.currentWorkspaceId
+      kind: claim
+      claim: workspaceId
+    - method: SessionScope.currentMemberId
+      kind: claim
+      claim: memberId
+    - method: SessionScope.callInfo
+      kind: metadata
+      type: io.taskly.jpa.session.CallInfo
+idempotency:
+  header: Idempotency-Key
+  methods:
+    - POST
+    - PUT
+    - PATCH
+    - DELETE
+  paths:
+    - /api/**
+scopeClaims:
+  workspaceId:
+    - workspaceId
+  memberId:
+    - memberId
+publicEntities:
+  - io.taskly.jpa.label.Label
+onlineOnly: []
+inertEffects:
+  - ActivityLog.record

@@ -21,6 +21,7 @@ chaîne entière à chaque poussée, plus `npm run build`.
 | Intégration | `npm run test:integration` | Gateway + runtime + backend factice sur PostgreSQL réel : exactement-une-fois, refus du proxy ouvert, deltas ordonnés sous commits concurrents, sortie de périmètre |
 | Différentiels | `aeris test …` | Même requête, mêmes données : exécuteur local vs backend réel |
 | Corpus, différentiel | `npm run corpus:differential` | Les 15 endpoints du second backend, lectures **et** écritures, contre l'application Spring qui tourne |
+| Corpus MVC/JPA | `npm run corpus:differential:jpa` | La **même API** sur l'autre pile Spring (MVC, JPA, `ThreadLocal`) : les deux doivent répondre identiquement |
 | Corpus, bout en bout | `npm run corpus:e2e` | Écriture hors ligne → outbox → réconciliation → remappage d'identifiants → convergence, contre cette même application |
 
 Les deux dernières sont les seules à confronter le système à une **vraie** application Spring

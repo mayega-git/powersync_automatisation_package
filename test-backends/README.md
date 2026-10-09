@@ -1,4 +1,4 @@
-# Second corpus de validation
+# Corpus de validation
 
 Le compilateur a été développé contre **un seul** backend réel. Valider contre un seul
 projet ne peut pas révéler ce qu'on y a inconsciemment ajusté : l'architecture peut être
@@ -8,6 +8,12 @@ son vocabulaire. C'est arrivé.
 `taskly/` est là pour ça : une application de listes de tâches, écrite comme une vraie
 application, puis passée au compilateur **sans être retouchée pour lui plaire**. Si elle
 échoue, c'est le compilateur qu'on corrige, pas le backend.
+
+`taskly-jpa/` est la **même API** sur l'autre pile Spring : handlers MVC bloquants,
+`JpaRepository`, session portée par un `ThreadLocal` qu'un filtre servlet remplit,
+`RestClient` au lieu de `WebClient`. Même schéma, mêmes réponses JSON, mêmes chemins.
+Les deux doivent donc classer chaque endpoint **identiquement** : quand ils divergent,
+le compilateur prouvait quelque chose sur le framework et non sur le programme.
 
 Elle diffère volontairement sur chaque axe qu'on contrôle :
 
@@ -20,6 +26,17 @@ Elle diffère volontairement sur chaque axe qu'on contrôle :
 | Erreurs | `ResponseStatusException` + advice | exceptions métier + advice |
 | Réponses | enveloppe `ApiResponse` | DTO nus |
 | Idempotence | filtre `Idempotency-Key` | aucun |
+
+Et `taskly-jpa` diffère de `taskly` sur la pile elle-même :
+
+| | `taskly` | `taskly-jpa` |
+|---|---|---|
+| Web | WebFlux (`Mono`, `Flux`) | MVC (valeurs nues) |
+| Persistance | R2DBC (`ReactiveCrudRepository`) | JPA (`JpaRepository`, `Optional`/`List`) |
+| Session | Reactor Context (`deferContextual`) | `ThreadLocal` + filtre servlet |
+| Entités | records et classes Lombok | classes JPA (`@Entity`, pas de record possible) |
+| Effet externe | `WebClient` | `RestClient` |
+| Port / base | 18090 / 15434 | 18091 / 15435 |
 
 ## Ce qu'il a trouvé
 
@@ -50,6 +67,16 @@ npm run corpus:build                       # mvn package
 java -jar test-backends/taskly/target/taskly-0.0.1.jar &
 npm run corpus:differential                # lectures ET écritures
 npm run corpus:e2e                         # hors ligne -> rejeu -> convergence
+```
+
+Et la pile MVC/JPA, sur sa propre base pour que les deux ne se voient jamais :
+
+```bash
+docker run -d --name taskly-jpa-pg -e POSTGRES_USER=taskly -e POSTGRES_PASSWORD=taskly \
+  -e POSTGRES_DB=taskly_jpa -p 127.0.0.1:15435:5432 postgres:16-alpine
+npm run corpus:build:jpa
+java -jar test-backends/taskly-jpa/target/taskly-jpa-0.0.1.jar &
+npm run corpus:differential:jpa
 ```
 
 La session est portée par des en-têtes (`x-workspace-id`, `x-member-id`), comme le mode
@@ -88,3 +115,19 @@ fixture n'exerce.
 - Il envoyait le **même corps** à chaque clé, écrivant la même valeur dans plusieurs
   lignes ; une liste triée sur cette colonne avait alors des égalités dont aucune base ne
   garantit l'ordre. Les valeurs du harnais varient maintenant par requête.
+
+## Ce que la pile MVC/JPA a trouvé
+
+- La règle « même ligne, déjà prouvée » (une relecture par la clé d'une ligne déjà lue)
+  propageait les paires de périmètre mais **pas la preuve par le parent**. Côté réactif
+  `Task` n'a pas de `@Version`, donc aucune relecture de garde optimiste n'exerçait ce
+  chemin : `Task` perdait sa projection dès qu'on en ajoutait une.
+- JPA fait du **dirty checking** avant d'écrire : un `save()` qui ne change aucune colonne
+  n'émet aucun UPDATE, donc **n'incrémente pas** `@Version`. R2DBC écrit toujours. La
+  différence est observable puisque la réponse porte la version ; le différentiel l'a vue
+  au premier passage (`$.version: local 1, server 0`).
+- `save()` d'une entité détachée est un **merge** en JPA (insert *ou* update), pas un
+  update aveugle. Sans `@Version` ni `Persistable#isNew` pour dire lequel, c'est refusé.
+- `aeris init` ne reconnaissait ni le porteur de session en `ThreadLocal` rendant un
+  enregistrement, ni un filtre d'idempotence écrit pour la pile servlet
+  (`OncePerRequestFilter`). Il trouvait donc **zéro** configuration sur ce corpus.

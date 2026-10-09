@@ -83,7 +83,7 @@ export interface QueryGuard {
 export function queryGuards(program: readonly Instr[], keys?: ReadonlyMap<string, string>): QueryGuard[] {
   const out: QueryGuard[] = [];
   // Single-row reads, so a later re-read of the same row by key inherits their proof.
-  const rows = new Map<string, { entity: string; pairs: Set<ScopePair>; keyExpr?: Expr }>();
+  const rows = new Map<string, { entity: string; pairs: Set<ScopePair>; keyExpr?: Expr; parents?: ParentCandidate[] }>();
   const visit = (block: readonly Instr[]) => {
     block.forEach((instr, index) => {
       if (instr.op === 'IF') {
@@ -112,7 +112,14 @@ export function queryGuards(program: readonly Instr[], keys?: ReadonlyMap<string
         if (instr.where.length === 1 && filter !== undefined && key !== undefined && filter.field === key && filter.cmp === 'eq'
           && filter.value?.k === 'get' && filter.value.field === key && filter.value.of.k === 'var') {
           const earlier = rows.get(filter.value.of.name);
-          if (earlier?.entity === instr.entity) for (const pair of earlier.pairs) pairs.add(pair);
+          if (earlier?.entity === instr.entity) {
+            for (const pair of earlier.pairs) pairs.add(pair);
+            // Whatever proved the earlier row proves this one, because it *is*
+            // that row: the key is the earlier row's own key. A proof carried by
+            // the parent counts as much as one carried by a filter -- the
+            // optimistic-lock re-read inside save() has no other.
+            for (const parent of earlier.parents ?? []) parents.push(parent);
+          }
         }
         const byKey = key === undefined ? undefined : instr.where.find((candidate) => candidate.field === key && candidate.cmp === 'eq' && candidate.value !== undefined);
         rows.set(instr.out, { entity: instr.entity, pairs, ...(byKey?.value === undefined ? {} : { keyExpr: byKey.value }) });
@@ -131,6 +138,8 @@ export function queryGuards(program: readonly Instr[], keys?: ReadonlyMap<string
             });
           if (after !== undefined) parents.push(after);
         }
+        // Record the proof with the row, so a re-read by its key inherits it.
+        if (parents.length > 0) rows.set(instr.out, { ...rows.get(instr.out)!, parents });
       }
       out.push({ entity: instr.entity, pairs, parents });
     });

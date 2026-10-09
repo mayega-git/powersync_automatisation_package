@@ -40,6 +40,20 @@ preuve n'est pas faite, la promouvoir ferait présenter comme définitive une é
 refusable — exactement ce qu'AERIS s'interdit. Elle reste donc équivalente à `REPLAYABLE`,
 et c'est un choix, pas un oubli.
 
+## Spécifique à JPA
+
+- `save()` d'une entité détachée est un **merge** (insert *ou* update selon la ligne), là
+  où R2DBC fait un update décidé par un identifiant ou une version nuls. Sans `@Version`
+  ni `Persistable#isNew` pour dire lequel s'applique, c'est refusé plutôt que deviné.
+- Une clé **assignée par la base** (`@GeneratedValue` sur un entier) ne peut pas être
+  choisie par un appareil : l'écriture reste en ligne. Une clé UUID choisie par le client
+  passe par le remappage d'identifiants existant.
+- JPA fait du **dirty checking** : un `save()` qui ne change aucune colonne n'incrémente
+  pas `@Version`. Le compilateur conditionne donc l'incrément à ce qu'une colonne diffère
+  du cliché de chargement.
+- Non modélisés : `EntityManager` direct, navigation paresseuse (`@ManyToOne` suivi au-delà
+  de la clé étrangère), collections `@OneToMany`, `@EntityGraph`.
+
 ## Extensions prévues par l'architecture
 
 - **Autres frameworks** : l'IR et le runtime sont indépendants du langage ; un adaptateur

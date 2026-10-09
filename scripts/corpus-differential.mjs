@@ -1,21 +1,29 @@
 #!/usr/bin/env node
 /**
- * Compiles the taskly corpus, then compares every locally executable endpoint
+ * Compiles a taskly corpus, then compares every locally executable endpoint
  * against the running backend — reads and writes. This is the only check that
  * confronts a compiled program with a real Spring Boot application rather than
  * a fixture, so a difference here is the signal that matters most.
  *
- * Expects the backend on TASKLY_BASE_URL and its database on TASKLY_DATABASE_URL.
+ * `node corpus-differential.mjs [reactive|jpa]`, default reactive: the same API
+ * on the two Spring stacks, so both must answer identically.
  */
 import { build } from '../src/aeris/compiler/build.ts';
 import { runDifferential } from '../src/aeris/compiler/differential.ts';
-import { CORPUS_ROOT, corpusClaims, corpusConfig, corpusHeaders } from './corpus-config.ts';
+import { CORPORA, corpusClaims, corpusHeaders } from './corpus-config.ts';
 
-const backendUrl = process.env.TASKLY_BASE_URL ?? 'http://127.0.0.1:18090';
-const databaseUrl = process.env.TASKLY_DATABASE_URL ?? 'postgres://taskly:taskly@127.0.0.1:15434/taskly';
-const config = corpusConfig();
+const name = process.argv[2] ?? 'reactive';
+const corpus = CORPORA[name];
+if (corpus === undefined) {
+  process.stderr.write(`Unknown corpus ${name}; expected one of ${Object.keys(CORPORA).join(', ')}.\n`);
+  process.exit(2);
+}
+const backendUrl = corpus.baseUrl;
+const databaseUrl = corpus.databaseUrl;
+const config = corpus.config();
+process.stdout.write(`corpus ${name}: ${corpus.root} against ${backendUrl}\n`);
 
-const { artifact } = await build({ rootDir: CORPUS_ROOT, config, write: false });
+const { artifact } = await build({ rootDir: corpus.root, config, write: false });
 const summary = await runDifferential({
   artifact,
   backendUrl,
