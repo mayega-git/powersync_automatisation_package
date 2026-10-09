@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { AerisHttpError, Executor, type ExecutionRequest } from '../../../src/aeris/runtime/executor.js';
 import { MemoryStore } from '../../../src/aeris/runtime/store/MemoryStore.js';
-import { decimalAdd, decimalDividePrecision, decimalMul, decimalRound, decimalSub, formatNow, isIsoTemporal, shiftTemporal } from '../../../src/aeris/runtime/values.js';
+import { dateOf, decimalAdd, decimalDividePrecision, decimalMul, decimalRound, decimalSub, formatNow, isIsoTemporal, shiftTemporal } from '../../../src/aeris/runtime/values.js';
 import { ENTITY, ORG, OTHER_ORG, endpoints, projection } from './fixtures.js';
 
 const ID = '33333333-3333-4333-8333-333333333333';
@@ -160,5 +160,17 @@ describe('value semantics', () => {
     expect(isIsoTemporal('2026-01-01T10:30:45.123456789', 'local-datetime')).toBe(true);
     expect(isIsoTemporal('2026-01-01T24:00', 'local-datetime')).toBe(false);
     expect(isIsoTemporal('2026-01-01', 'local-datetime')).toBe(false);
+  });
+
+  it('builds a date from its parts, and has no answer for one java.time refuses', () => {
+    expect(dateOf(2026, 1, 1)).toBe('2026-01-01');
+    expect(dateOf(2026, 12, 31)).toBe('2026-12-31');
+    expect(dateOf(2024, 2, 29)).toBe('2024-02-29');
+    // java.time throws DateTimeException for these; the guard the compiler
+    // emits turns the missing answer into that same failure.
+    expect(dateOf(2026, 2, 29)).toBeUndefined();
+    expect(dateOf(2026, 13, 1)).toBeUndefined();
+    expect(dateOf(2026, 0, 1)).toBeUndefined();
+    expect(dateOf(2026, 4, 31)).toBeUndefined();
   });
 });

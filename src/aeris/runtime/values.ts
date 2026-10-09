@@ -254,6 +254,18 @@ export function shiftTemporal(text: string, amount: number, unit: TemporalUnit):
   return `${date}T${time}${zone}`;
 }
 
+/**
+ * `LocalDate.of(year, month, day)`. Returns undefined for a date java.time
+ * refuses (it throws DateTimeException), so the caller can raise the same
+ * failure rather than invent the 2nd of March for the 31st of February.
+ */
+export function dateOf(year: number, month: number, day: number): string | undefined {
+  if (!Number.isInteger(year) || !Number.isInteger(month) || !Number.isInteger(day)) return undefined;
+  if (month < 1 || month > 12 || day < 1 || day > daysInMonth(year, month)) return undefined;
+  const pad = (value: number, width = 2) => String(Math.abs(value)).padStart(width, '0');
+  return `${year < 0 ? '-' : ''}${pad(year, 4)}-${pad(month)}-${pad(day)}`;
+}
+
 function sortKeys(value: JsonValue): JsonValue {
   if (Array.isArray(value)) return value.map(sortKeys);
   if (value !== null && typeof value === 'object') {

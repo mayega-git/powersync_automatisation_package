@@ -238,6 +238,16 @@ export function libraryStatic(ev: Evaluator, fqn: string, name: string, args: SV
       // a real parse, calendar included (`isoTemporal`), so a text the backend
       // rejects is rejected here with the backend's own exception. Any other
       // formatter has a grammar of its own and stays online.
+      if (name === 'of' && type === 'LocalDate' && args.length === 3) {
+        const parts = [arg(0), arg(1), arg(2)] as const;
+        const built = op('dateOf', ...parts);
+        scope.block.emit({
+          op: 'ASSERT',
+          test: op('notNull', built),
+          error: ev.errors.map({ t: 'exception', cls: 'java.time.DateTimeException', message: lit('Invalid date') }),
+        });
+        return pure(built, { name: 'java.time.LocalDate', args: [], array: 0 });
+      }
       if (name === 'parse' && (type === 'LocalDate' || type === 'LocalDateTime') && (args.length === 1 || args.length === 2)) {
         const expected = type === 'LocalDate' ? 'local-date' : 'local-datetime';
         const formatter = args.length === 2 ? arg(1) : undefined;
@@ -806,6 +816,14 @@ function valueMethod(ev: Evaluator, receiver: SV & { t: 'pure' }, name: string, 
           return pure(op('shiftTemporal', self, amount, lit(unit)), receiver.jt);
         }
       }
+      // LocalDate.atStartOfDay(): java.time prints midnight as `T00:00`, so the
+      // text of the date with that suffix *is* the LocalDateTime's own form.
+      if (name === 'atStartOfDay' && args.length === 0 && type === 'java.time.LocalDate') {
+        return pure(op('concat', self, lit('T00:00')), { name: 'java.time.LocalDateTime', args: [], array: 0 });
+      }
+      // A temporal is held as its ISO text, so toString() only has to render it
+      // the way Java prints it: a shift of nothing does exactly that.
+      if (name === 'toString' && args.length === 0) return pure(op('shiftTemporal', self, lit(0), lit('days')), T.string);
       if (name === 'isBefore' && args.length === 1) return pure(op('lt', self, arg(0)), T.boolean);
       if (name === 'isAfter' && args.length === 1) return pure(op('gt', self, arg(0)), T.boolean);
       if (name === 'isEqual' && args.length === 1) return pure(op('eq', self, arg(0)), T.boolean);

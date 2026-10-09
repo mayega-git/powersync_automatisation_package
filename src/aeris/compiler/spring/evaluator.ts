@@ -1581,6 +1581,13 @@ export class Evaluator {
       && method.params.every((param, index) => param.type.name === typed[0]!.params[index]!.type.name));
     const concrete = typed.filter((method) => method.body !== undefined && method.owner.kind === 'class');
     if (sameSignature && concrete.length === 1) return concrete[0]!;
+    // Java resolves without inference before it resolves with it, so a
+    // parameter of a concrete type beats one that is a type variable:
+    // `error(String, int)` wins over `error(String, T)` for an int argument.
+    const variables = new Set(type.typeParams);
+    const withoutVariables = typed.filter((method) =>
+      method.params.every((param) => param.type.array > 0 || !variables.has(param.type.name)));
+    if (withoutVariables.length === 1) return withoutVariables[0]!;
     this.fail(`Ambiguous overload ${type.simple}.${name}/${args.length}`, node, scope);
   }
 

@@ -175,6 +175,14 @@ function contextWrite(receiver: MonoSV | FluxSV, args: SV[], node: SyntaxNode): 
 export function reactiveCall(ev: Evaluator, receiver: MonoSV | FluxSV, name: string, args: SV[], node: SyntaxNode, scope: Scope): SV {
   if (IDENTITY_OPERATORS.has(name)) return receiver;
   if (name === 'contextWrite') return contextWrite(receiver, args, node);
+  // Mono.flux() / Flux.next(): the same values under the other publisher.
+  if (name === 'flux' && args.length === 0 && receiver.t === 'mono') {
+    return { t: 'flux', elem: receiver.elem, run: (block) => {
+      const emission = receiver.run(block);
+      const item = ev.encode(emission.value);
+      return { list: cond(emission.empty, lit([]), { k: 'list', items: [item] }), element: () => emission.value };
+    } };
+  }
   if (name === 'as' && args.length === 1) return ev.apply(args[0]!, [receiver], scope.block, node, scope);
   if (SIDE_CHANNEL_OPERATORS.has(name)) return sideChannel(ev, receiver, args, node, scope, name);
   if (ERROR_HANDLERS.has(name)) return errorHandler(ev, receiver, args, node, scope, name);

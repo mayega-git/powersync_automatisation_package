@@ -20,6 +20,7 @@ import {
   decimalSetScale,
   decimalSub,
   formatNow,
+  dateOf,
   isIsoTemporal,
   javaStrip,
   shiftTemporal,
@@ -674,6 +675,10 @@ class Frame {
         if (expr.op === 'matches') return new RegExp(`^(?:${pattern})$`, 'u').test(str(a));
         return str(a).replace(new RegExp(pattern, 'gu'), str(values[2] ?? null));
       }
+      case 'dateOf':
+        // null for a date java.time refuses: the guard the compiler emits turns
+        // it into the backend's own DateTimeException.
+        return dateOf(num(a), num(b), num(values[2] ?? null)) ?? null;
       case 'shiftTemporal': {
         // plusDays / minusMonths and the rest of java.time, rendered the way
         // Java's own toString() does so a response body compares exactly.
