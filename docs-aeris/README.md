@@ -105,17 +105,27 @@ Trois applications WebFlux/R2DBC indépendantes, avec pour seule configuration c
 
 | Fichiers Java | Endpoints | Hors ligne | Projections | Blocage principal |
 |---|---|---|---|---|
-| 105 | 33 | 1 | 0 | `LocalDateTime.minusDays` (8 endpoints) |
-| 359 | 185 | 7 | 0 | sous-classes anonymes (32 endpoints) |
-| 326 | 219 | 27 | 8 | `ThreadLocal` comme état partagé (69 endpoints) |
+| 105 | 33 | 1 | 0 | `DatabaseClient` / SQL brut (7 endpoints) |
+| 359 | 185 | 7 | 0 | réponse `Page<T>` de Spring (15 endpoints) |
+| 326 | 219 | 40 | 9 | cache Redis injecté (37 endpoints) |
 
-C'est la mesure qui compte, et elle est modeste : **la détection de configuration
-généralise, la couverture non**. Sur ces trois backends, `aeris init` a trouvé seul le
-porteur de session avec des noms qu'il n'avait jamais vus, mais les blocages dominants
-sont des manques de modélisation de bibliothèque, pas des limites sémantiques — chacun
-est chiffré, donc chacun est une tâche et non une inconnue. Deux des trois plafonnent par
-ailleurs sur leur **propre** modèle de données : aucune de leurs entités ne porte de claim
-de session, donc rien n'est confinable sans décision humaine.
+C'est la mesure qui compte, et elle est instructive. `aeris init` a trouvé seul le porteur
+de session sur les trois, avec des noms et des formes qu'il n'avait jamais vus — Reactor
+Context, `ThreadLocal`, accesseurs rendant un seul claim. Et les blocages dominants ne
+sont plus des manques du compilateur : ce sont des **refus corrects**. Un cache Redis
+injecté dans un service est de l'état externe mutable ; un téléversement de fichier n'a
+pas sa place hors ligne ; du SQL brut n'est pas analysable ; le chemin d'authentification
+doit rester en ligne. Un seul refus est un choix plutôt qu'une limite : la réponse
+`Page<T>` de Spring, dont la sérialisation est l'interne du framework — que Spring a
+déprécié depuis Boot 3.3. Promettre une parité à l'octet sur un format que son propre
+auteur va changer serait un mauvais pari.
+
+Deux des trois plafonnent par ailleurs sur leur **propre** modèle de données : aucune de
+leurs entités ne porte de claim de session, donc rien n'y est confinable sans une
+décision humaine. Un endpoint refusé qui lit une entité non projetée ne gagnerait rien à
+être débloqué — il passerait d'`UNSUPPORTED` à `ONLINE_REQUIRED`. C'est ce test qui
+décide où le travail de compilateur vaut encore quelque chose, pas le simple décompte des
+blocages.
 
 À titre d'échelle, AERIS a aussi été exécuté sur un backend privé de 1 953 endpoints :
 595 utilisables hors ligne, 205 projections déduites du code et vérifiées contre le schéma
