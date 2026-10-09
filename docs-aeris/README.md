@@ -82,34 +82,55 @@ const { runtime } = await createBrowserRuntime({
 // Les fetch vers apiOrigin passent désormais par AERIS, sans autre changement de code.
 ```
 
-## Résultat sur le backend réel (copie `iwm-backend`)
+## Ce que ça donne, mesuré
 
-Mesures sur la copie du backend (4 389 fichiers Java, 1 953 endpoints) :
+Deux corpus **reproductibles** : la même API sur les deux piles Spring, livrés avec le
+projet, compilés à chaque exécution de la suite de tests et confrontés à l'application qui
+tourne (`npm run corpus:differential`, `npm run corpus:differential:jpa`).
 
-| Classe | Endpoints | Sens |
-|---|---|---|
-| `LOCAL_READ_SAFE` | 294 | Lectures servies localement, prouvées limitées au périmètre de session |
-| `REPLAYABLE` | 47 | Écritures sans lecture d'état partagé, rejouées une fois |
-| `SPECULATIVE` | 249 | Écritures dépendant de données partagées : provisoires, revalidées par le serveur |
-| `ONLINE_REQUIRED` | 307 | Effet externe, lecture non bornée au périmètre, pas d'idempotence… |
-| `UNSUPPORTED` | 1 056 | Le compilateur n'a pas pu prouver la sémantique (raison précise dans le rapport) |
+| Corpus | Pile | Endpoints | Hors ligne | Projections | Différentiel |
+|---|---|---|---|---|---|
+| `taskly` | WebFlux / R2DBC | 15 | **14** | 3 | 40/40 identiques |
+| `taskly-jpa` | MVC / JPA | 15 | **14** | 3 | 41/41 identiques |
 
-- **590 endpoints utilisables hors ligne**, tous accompagnés de preuves (fichier/ligne/hash).
-- **Autorisations compilées** : les endpoints locaux protégés par
-  `@PreAuthorize("@businessAccessPolicy…")` ont leur politique compilée depuis le code Java.
-- **204 projections** déduites du code, vérifiées contre le schéma PostgreSQL réel ;
-  celles qui divergent du code Java sont automatiquement exclues (`aeris analyze --database`).
-- **Parité différentielle** contre le backend Spring en fonctionnement : 291 requêtes
-  sur 294 endpoints de lecture, **291 identiques, 0 divergence** (statut et corps).
-  À lire avec sa limite : **269 de ces 291 comparaisons sont des `403` identiques**, parce
-  que la session de test n'obtient pas de jeton porteur vérifié. Ce qui est donc prouvé,
-  c'est que l'autorisation compilée refuse exactement comme le backend ; le chemin de
-  données n'est exercé que par 15 réponses `200` et 7 `404`. Voir [tests.md](tests.md).
-- **Le chemin d'écriture n'est pas encore vérifié contre le backend réel** : les 296
-  endpoints `REPLAYABLE`/`SPECULATIVE` portent un contrat de synchronisation que le mode
-  `writes` des tests différentiels n'a jamais confronté à des mutations réelles.
-- **Démonstration réelle** : création et modification hors ligne, rejeu via la Gateway,
-  identifiant serveur remappé, convergence (`example/aeris-real-backend-demo.ts`).
-- `GET /api/sales-points` est classé `ONLINE_REQUIRED` : le compilateur a détecté que
-  ce handler peut renvoyer des lignes d'autres organisations (`findAll()` sans filtre)
-  — ce qui est vérifiable sur le backend réel.
+Dans les deux cas le seul endpoint restant en ligne appelle un fournisseur de mail : un
+effet externe qu'aucun appareil ne doit reproduire. Les deux classent les 15 endpoints
+**identiquement** — quand ils divergent, le compilateur prouvait quelque chose sur le
+framework et non sur le programme.
+
+### Sur des backends que personne n'a écrits pour AERIS
+
+Trois applications WebFlux/R2DBC indépendantes, avec pour seule configuration ce que
+`aeris init` propose de lui-même, sans aucun réglage à la main :
+
+| Fichiers Java | Endpoints | Hors ligne | Projections | Blocage principal |
+|---|---|---|---|---|
+| 105 | 33 | 1 | 0 | `LocalDateTime.minusDays` (8 endpoints) |
+| 359 | 185 | 7 | 0 | sous-classes anonymes (32 endpoints) |
+| 326 | 219 | 27 | 8 | `ThreadLocal` comme état partagé (69 endpoints) |
+
+C'est la mesure qui compte, et elle est modeste : **la détection de configuration
+généralise, la couverture non**. Sur ces trois backends, `aeris init` a trouvé seul le
+porteur de session avec des noms qu'il n'avait jamais vus, mais les blocages dominants
+sont des manques de modélisation de bibliothèque, pas des limites sémantiques — chacun
+est chiffré, donc chacun est une tâche et non une inconnue. Deux des trois plafonnent par
+ailleurs sur leur **propre** modèle de données : aucune de leurs entités ne porte de claim
+de session, donc rien n'est confinable sans décision humaine.
+
+À titre d'échelle, AERIS a aussi été exécuté sur un backend privé de 1 953 endpoints :
+595 utilisables hors ligne, 205 projections déduites du code et vérifiées contre le schéma
+PostgreSQL réel. Aucun de ces backends n'est une référence : une régression se lit dans le
+**tableau entier**, jamais dans une seule ligne.
+
+### Ce qui est prouvé, et ce qui ne l'est pas
+
+- **Preuves attachées** : chaque classement porte fichier, ligne et empreinte des sources
+  qui l'ont justifié ; chaque refus porte sa raison en clair.
+- **Autorisations compilées** : les `@PreAuthorize` sont exécutés symboliquement et
+  deviennent des contrôles IR sur les claims. Une politique indécidable laisse l'endpoint
+  en ligne — jamais d'approximation d'une décision de sécurité.
+- **Écritures vérifiées de bout en bout** sur les corpus : outbox, ordonnancement des
+  opérations dépendantes, remappage de l'identifiant choisi par le client, convergence,
+  et rejeu qui n'écrit rien de plus (`npm run corpus:e2e`).
+- **Ce qui n'est pas prouvé** reste en ligne avec une raison. C'est le principe
+  fail-closed : une couverture partielle est sûre, pas cassée.

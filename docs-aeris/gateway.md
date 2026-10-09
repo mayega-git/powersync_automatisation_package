@@ -11,15 +11,15 @@ listen: { host: 0.0.0.0, port: 8090 }
 artifactFile: ./aeris-artifact.signed.json
 trustedKeys: { aeris-2026: "${AERIS_PUBLIC_KEY}" }      # clé publique de l'artefact
 backend:
-  url: http://iwm-backend:8080
+  url: http://backend:8080
   forwardHeaders: [authorization, x-api-key, x-client-id, x-agency-id]
 database:
   url: "${AERIS_DATABASE_URL}"                            # même PostgreSQL que le backend
   schema: aeris
 auth:                                                     # vérifie l'appelant comme le backend
   mode: jwt
-  jwksUrl: http://iwm-backend:8080/.well-known/jwks.json
-  issuer: iwm-backend
+  jwksUrl: http://backend:8080/.well-known/jwks.json
+  issuer: your-issuer
   claims: { tenantId: tid, organizationId: oid, agencyId: aid, userId: sub, actorId: actor, permissions: permissions }
 subjectClaims: [tenantId, userId]                         # propriétaire d'une opération
 policy: { disabled: [], freshness: {}, minArtifactVersion: 3 }

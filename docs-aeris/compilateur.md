@@ -37,16 +37,18 @@ activeProfiles: [r2dbc]               # profils Spring de production (@Profile)
 serverTimeZone: UTC                   # zone JVM, pour LocalDateTime.now()
 context:
   sources:                            # méthodes statiques renvoyant la session vérifiée
-    - method: ReactiveRequestContextHolder.getRequiredContext
+    - method: SessionScope.current
       kind: required                  # required | optional | claim | metadata
-      type: yowyob.comops.api.kernel.domain.model.TenantContext
-    - method: ReactiveRequestContextHolder.getCorrelation
+      type: com.example.api.session.CurrentUser
+    - method: SessionScope.currentWorkspaceId
+      kind: claim                     # un seul identifiant de cette session
+      claim: workspaceId
+    - method: SessionScope.callInfo
       kind: metadata                  # métadonnée de requête : présente mais opaque
-      type: yowyob.comops.api.kernel.domain.model.RequestCorrelation
-  authentication: yowyob.comops.api.kernel.config.ApiKeyAuthenticationToken
+      type: com.example.api.session.CallInfo
+  authentication: com.example.api.security.AppPrincipal
 inertEffects:                         # comptabilité serveur, rejouée à la réconciliation
-  - RecordSystemAuditUseCase.record
-  - BusinessEventPublisher.publish
+  - ActivityLog.record
 idempotency:                          # seulement si le backend déduplique vraiment
   header: Idempotency-Key
   methods: [POST, PUT, PATCH, DELETE]

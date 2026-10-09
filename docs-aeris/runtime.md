@@ -63,9 +63,9 @@ Réponses locales : même statut et même corps que le backend ; en-têtes
 
 Les `@PreAuthorize` sont **compilés** : le compilateur exécute symboliquement les beans
 de politique du backend (par ex. `BusinessAccessPolicy.hasPermission`) et produit des
-contrôles IR sur les claims de session (`auth.checks`). Sur le backend `iwm-backend`,
-les 424 endpoints locaux protégés par `@businessAccessPolicy…` ont leur politique
-entièrement compilée : aucune réimplémentation côté front. La session doit fournir les
+contrôles IR sur les claims de session (`auth.checks`) : aucune réimplémentation côté
+front. Une politique dont le compilateur ne peut pas décider le verdict laisse l'endpoint
+en ligne — il n'y a pas d'approximation d'une décision de sécurité. La session doit fournir les
 autorités accordées dans le claim `authorities` (le claim `permissions` du JWT).
 
 À défaut de contrôle compilé, l'expression est évaluée sur les claims mis en cache :

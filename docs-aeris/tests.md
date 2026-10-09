@@ -103,6 +103,6 @@ AERIS_CLAIMS='{"tenantId":"…","organizationId":"…"}' \
 npx tsx example/aeris-real-backend-demo.ts
 ```
 
-Résultat obtenu sur la copie Docker du backend `iwm-backend` : la ligne
-« Kiosque renommé hors ligne » créée hors ligne existe en base avec l'identifiant
-attribué par le serveur, et la projection locale ne contient plus l'identifiant local.
+Ce que la démonstration établit, contre le backend qu'on lui donne : la ligne créée hors
+ligne existe en base avec l'identifiant attribué par le **serveur**, et la projection
+locale ne contient plus l'identifiant que l'appareil avait inventé.
